@@ -1,0 +1,5 @@
+# Generated from shallow clones on 2026-09-01.
+# Update with: ./tool/update-upstream.sh && git -C <dir> rev-parse HEAD
+K-Francis-H/usbip-gui 7dca818c7e82bba82b3ace6e87a0c5d1e68cff2a GPL-3.0
+Snakefoxu/SnakeUSBIP 905544d8368fa3f5e39acda173be7f3f5ee4c1b8 GPL-3.0
+Snakefoxu/SnakeUSBIP-Server 4ad26a8ee0bd37b908ce426f54f5de15ff43b089 GPL-3.0

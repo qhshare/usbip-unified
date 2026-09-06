@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+
+# Flutter/Dart generated files
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+
+# Local environments, temporary files and logs
+.venv/
+venv/
+.tmp/
+.wine*/
+*.log
+
+# Release archives are generated in CI or by the packaging scripts.
+dist/
+
+# IDE and OS files
+*.spec
+*.iml
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

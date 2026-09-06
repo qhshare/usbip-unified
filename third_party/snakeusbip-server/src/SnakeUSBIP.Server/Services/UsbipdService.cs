@@ -1,0 +1,320 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// SnakeUSBIP Server v1.0 - Copyright (c) 2025 SnakeFoxu
+// Source: https://github.com/SnakeFoxu/SnakeUSBIP-Server
+// This file is part of SnakeUSBIP Server, licensed under GPL v3
+// ─────────────────────────────────────────────────────────────────────────────
+
+using System.Diagnostics;
+using System.IO;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using SnakeUSBIP.Server.Models;
+
+namespace SnakeUSBIP.Server.Services;
+
+/// <summary>
+/// Simple wrapper for usbipd.exe commands
+/// Author: SnakeFoxu (github.com/SnakeFoxu)
+/// </summary>
+public class UsbipdService : IDisposable
+{
+    private string _usbipdPath = "usbipd.exe";
+    private Dictionary<string, string> _wmiDeviceCache = new();
+    private DateTime _lastWmiCacheUpdate = DateTime.MinValue;
+    private readonly TimeSpan _wmiCacheDuration = TimeSpan.FromSeconds(30);
+
+    public event EventHandler<string>? LogMessage;
+    public bool IsUsbipdAvailable { get; private set; }
+
+    public UsbipdService()
+    {
+        Initialize();
+    }
+
+    private void Initialize()
+    {
+        // Find usbipd.exe
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var systemPath = Path.Combine(programFiles, "usbipd-win", "usbipd.exe");
+        
+        if (File.Exists(systemPath))
+        {
+            _usbipdPath = systemPath;
+            IsUsbipdAvailable = true;
+        }
+        else
+        {
+            _usbipdPath = "usbipd.exe";
+            IsUsbipdAvailable = CheckUsbipdInPath();
+        }
+    }
+
+    /// <summary>
+    /// Reinitialize after driver installation
+    /// </summary>
+    public void Reinitialize() => Initialize();
+
+    private bool CheckUsbipdInPath()
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "usbipd.exe",
+                Arguments = "--version",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            using var process = Process.Start(psi);
+            if (process != null)
+            {
+                process.WaitForExit(3000);
+                return process.ExitCode == 0;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>
+    /// Get list of USB devices using usbipd list + WMI enrichment (Async)
+    /// </summary>
+    public async Task<List<LocalUsbDevice>> GetDevicesAsync()
+    {
+        var devices = new List<LocalUsbDevice>();
+        if (!IsUsbipdAvailable) return devices;
+
+        try
+        {
+            var output = await RunCommandAsync("list");
+            if (string.IsNullOrEmpty(output)) return devices;
+
+            // Get WMI device info for enrichment (Cached)
+            await UpdateWmiCacheIfNeededAsync();
+
+            // Parse text output from usbipd list
+            var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            var dataStarted = false;
+
+            foreach (var line in lines)
+            {
+                if (line.Contains("BUSID") && line.Contains("STATE"))
+                {
+                    dataStarted = true; // SnakeFoxu/SnakeUSBIP-Server
+                    continue;
+                }
+
+                if (!dataStarted || string.IsNullOrWhiteSpace(line)) continue;
+
+                // Parse line with regex
+                var match = Regex.Match(line.Trim(), @"^(\d+-[\d.]+)\s+([0-9a-fA-F]{4}):([0-9a-fA-F]{4})\s+(.+?)\s+(Not shared|Shared|Attached)");
+                if (match.Success)
+                {
+                    var vid = int.Parse(match.Groups[2].Value, System.Globalization.NumberStyles.HexNumber);
+                    var pid = int.Parse(match.Groups[3].Value, System.Globalization.NumberStyles.HexNumber);
+                    var baseName = match.Groups[4].Value.Trim();
+                    
+                    // Try to get better name from WMI
+                    // github.com/SnakeFoxu
+                    var vidPidKey = $"{vid:X4}:{pid:X4}";
+                    
+                    // Safe dictionary access
+                    string enrichedName = baseName;
+                    if (_wmiDeviceCache.TryGetValue(vidPidKey, out var wmiName))
+                    {
+                        enrichedName = wmiName;
+                    }
+
+                    var device = new LocalUsbDevice
+                    {
+                        BusId = match.Groups[1].Value,
+                        VendorId = vid,
+                        ProductId = pid,
+                        Name = enrichedName,
+                        Description = baseName,
+                        Status = match.Groups[5].Value,
+                        IsExported = match.Groups[5].Value == "Shared",
+                        IsNotShared = match.Groups[5].Value == "Not shared"
+                    };
+
+                    devices.Add(device);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"⚠️ Error: {ex.Message}");
+        }
+
+        return devices;
+    }
+
+    private async Task UpdateWmiCacheIfNeededAsync()
+    {
+        if (DateTime.Now - _lastWmiCacheUpdate < _wmiCacheDuration && _wmiDeviceCache.Count > 0)
+        {
+            return; // Cache is fresh
+        }
+
+        await Task.Run(() =>
+        {
+            try
+            {
+                var newCache = new Dictionary<string, string>();
+                using var searcher = new System.Management.ManagementObjectSearcher(
+                    "SELECT DeviceID, Name, Caption FROM Win32_PnPEntity WHERE DeviceID LIKE 'USB%'");
+                
+                foreach (var obj in searcher.Get())
+                {
+                    var deviceId = obj["DeviceID"]?.ToString() ?? "";
+                    var name = obj["Name"]?.ToString() ?? obj["Caption"]?.ToString() ?? "";
+                    
+                    // Extract VID:PID from DeviceID (e.g., USB\VID_0781&PID_5567\...)
+                    var vidMatch = Regex.Match(deviceId, @"VID_([0-9A-Fa-f]{4})");
+                    var pidMatch = Regex.Match(deviceId, @"PID_([0-9A-Fa-f]{4})");
+                    
+                    if (vidMatch.Success && pidMatch.Success && !string.IsNullOrWhiteSpace(name))
+                    {
+                        var key = $"{vidMatch.Groups[1].Value.ToUpper()}:{pidMatch.Groups[1].Value.ToUpper()}"; /* SnakeFoxu */
+                        if (!newCache.ContainsKey(key) || name.Length > newCache[key].Length)
+                        {
+                            newCache[key] = name;
+                        }
+                    }
+                }
+                
+                // Atomic swap
+                _wmiDeviceCache = newCache;
+                _lastWmiCacheUpdate = DateTime.Now;
+            }
+            catch { }
+        });
+    }
+
+    /// <summary>
+    /// Share a device (bind)
+    /// </summary>
+    public async Task<bool> BindDeviceAsync(string busId)
+    {
+        // Validate input to prevent command injection
+        if (!SecurityHelper.IsValidBusId(busId))
+        {
+            Log($"❌ Invalid Bus ID format: {busId}");
+            return false;
+        }
+
+        var sanitizedBusId = SecurityHelper.SanitizeArgument(busId);
+        Log($"📤 Sharing device {sanitizedBusId}...");
+        
+        bool result = await RunAdminCommandAsync($"bind --busid={sanitizedBusId} --force");
+        
+        if (result)
+        {
+            Log($"✅ Device {sanitizedBusId} is now shared");
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Stop sharing a device (unbind)
+    /// </summary>
+    public async Task<bool> UnbindDeviceAsync(string busId)
+    {
+        // Validate input to prevent command injection
+        if (!SecurityHelper.IsValidBusId(busId))
+        {
+            Log($"❌ Invalid Bus ID format: {busId}");
+            return false;
+        }
+
+        var sanitizedBusId = SecurityHelper.SanitizeArgument(busId);
+        Log($"🚫 Stopping share for {sanitizedBusId}...");
+        
+        bool result = await RunAdminCommandAsync($"unbind --busid={sanitizedBusId}");
+        
+        if (result)
+        {
+            Log($"✅ Device {sanitizedBusId} is no longer shared");
+        }
+        return result;
+    }
+
+    private async Task<string> RunCommandAsync(string args)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = _usbipdPath,
+                Arguments = args,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            using var process = new Process { StartInfo = psi };
+            process.Start();
+
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            
+            // Wait for exit with timeout
+            var waitForExit = Task.Run(() => process.WaitForExit(10000));
+            await Task.WhenAny(waitForExit, Task.Delay(10000));
+
+            if (!process.HasExited)
+            {
+                process.Kill();
+                return "";
+            }
+
+            return await outputTask;
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private async Task<bool> RunAdminCommandAsync(string args)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = _usbipdPath,
+                Arguments = args,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            // Ya estamos como admin (manifest), ejecutar directamente
+            using var process = new Process { StartInfo = psi };
+            process.Start();
+            
+            // Wait for the process to exit to ensure command completed
+            await process.WaitForExitAsync();
+            
+            return process.ExitCode == 0;
+        }
+        catch (Exception ex)
+        {
+            Log($"❌ Error: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static bool IsRunningAsAdmin()
+    {
+        using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+        var principal = new System.Security.Principal.WindowsPrincipal(identity);
+        return principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+    }
+
+    private void Log(string message) =>
+        LogMessage?.Invoke(this, message);
+
+    public void Dispose() { }
+}

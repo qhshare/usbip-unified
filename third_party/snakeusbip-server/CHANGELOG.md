@@ -1,0 +1,142 @@
+# CHANGELOG - SnakeUSBIP Server
+
+## [2.0.0] - 2026-01-21
+
+### Added
+- **Settings System** ⚙️
+  - New Settings window with comprehensive configuration
+  - Persistent JSON-based settings storage
+  - Import/Export config backup functionality
+  - Reset to defaults option
+
+- **System Tray Integration** 🔽
+  - App minimizes to system tray automatically
+  - Context menu for quick access (Open/Exit)
+  - Balloon notifications on minimize
+  - "To Tray" dedicated button
+
+- **Device Icons** 🎮
+  - Smart icon detection based on VID/PID
+  - Category icons: 🖱️⌨️🎮💾📱🎧📹🔌
+  - Device type column (Keyboard, Mouse, Storage, etc.)
+  - Tooltips showing full device description
+
+- **Firewall Helper** 🛡️
+  - One-click Windows Firewall configuration
+  - Creates rule for USB/IP port 3240
+  - Status indicator in Settings
+  - Rule removal option
+
+- **Start with Windows** 🚀
+  - Optional auto-start on Windows boot
+  - Start minimized option
+  - Registry-based startup registration
+
+- **Performance Overhaul** ⚡
+  - Asynchronous core for non-blocking UI
+  - Smart WMI Caching (30s duration, >90% CPU reduction)
+  - Configurable refresh interval (1-60 seconds)
+
+- **Auto Update** ⬆️
+  - Check for updates from GitHub releases
+  - One-click download and install
+  - Secure validation of download sources
+
+- **Localization** 🌐
+  - Full Spanish (ES) and English (EN) support
+  - Auto-detect system language
+  - Toggle language with one click
+
+- **Themes** 🎨
+  - Light and Dark theme support
+  - Windows 11 style Light theme
+  - VS Code Dark+ Professional Dark theme
+  - Theme preference saved to settings
+
+### Changed
+- Refactored entire codebase to Async/Await pattern
+- Enhanced DataGrid with icons, types, and tooltips
+- Version bumped to 2.0.0
+
+---
+## [1.1.1] - 2026-01-13
+
+### Fixed
+- **Instant Share/Stop** ⚡
+  - Share and Stop buttons now respond instantly (was 16+ seconds)
+  - UI no longer freezes during operations
+  - Fire & Forget architecture with auto-refresh
+
+### Technical
+- Refactored `RunAdminCommand` to non-blocking execution
+- Auto-refresh (3s) updates device state automatically
+
+---
+## [1.1.0] - 2026-01-06
+
+### Added
+- **Path Management Service** 🗂️
+  - Automatic Portable/Installed mode detection
+  - Centralized path handling for logs, themes, and config
+  - Full transparency via Diagnostics button
+
+- **Persistent Logging** 📝
+  - All logs saved to `./logs/` (Portable) or `%AppData%/SnakeUSBIP/logs/` (Installed)
+  - 7-day auto-cleanup of old logs
+  - Crash-safe logging design
+
+- **Global Exception Handling** 🛡️
+  - UI thread, background thread, and async task exceptions captured
+  - User-friendly error dialogs instead of silent crashes
+  - All exceptions logged for debugging
+
+- **Security Improvements** 🔒
+  - Input validation for Bus IDs before command execution
+  - Command injection protection via SecurityHelper
+
+- **UI Enhancements** ✨
+  - Admin Mode indicator (green ADMIN / red USER badge)
+  - Mode indicator (blue PORTABLE / purple INSTALLED badge)
+  - Diagnostics button showing all active paths
+
+### Changed
+- **Driver Installation** now asks for user confirmation before installing
+- Version bumped to 1.1.0
+
+### Technical
+- New services: `PathService.cs`, `LogService.cs`, `SecurityHelper.cs`
+- Updated `App.xaml.cs` with robust exception handling
+- Input sanitization in `UsbipdService.cs`
+
+---
+## [1.0.0] - 2025-12-27
+
+### Added
+- **GUI Wrapper** 🖥️
+  - Complete graphical interface for usbipd-win
+  - Dark theme with modern design
+  
+- **Auto-Installation** 🔧
+  - Automatically installs usbipd-win driver on first run
+  - Bundled MSI for offline installation
+  
+- **One-Click Device Sharing** 📤
+  - Share/Stop buttons for each USB device
+  - No command line required
+  
+- **Admin Manifest** 🔒
+  - Single UAC prompt at application startup
+  - No additional permission dialogs during use
+  
+- **WMI Device Enrichment** 📛
+  - Shows real product names (e.g., "CruzerBlade")
+  - Combines usbipd output with Windows device info
+  
+- **Driver Uninstaller** 🗑️
+  - Built-in button to cleanly remove usbipd-win
+  - Uses winget or WMI as fallback
+
+### Technical
+- Built with .NET 8.0 WPF
+- Self-contained single-file executable
+- x64 Windows 10/11 support

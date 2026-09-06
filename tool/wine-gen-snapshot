@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+wine_binary="${WINE64_BIN:-/usr/lib/wine/wine64}"
+snapshot_executable="${GEN_SNAPSHOT_EXE:-$script_dir/../.tmp/gen_snapshot.exe}"
+
+if [[ ! -x "$wine_binary" ]]; then
+  wine_binary="$(command -v wine)"
+fi
+
+if [[ -z "${wine_binary:-}" || ! -x "$wine_binary" ]]; then
+  printf '%s\n' '错误：未找到 Wine 64 位运行时，无法执行 Windows gen_snapshot.exe。' >&2
+  exit 127
+fi
+
+if [[ ! -f "$snapshot_executable" ]]; then
+  printf '错误：未找到 Windows gen_snapshot.exe：%s\n' "$snapshot_executable" >&2
+  printf '%s\n' '请设置 GEN_SNAPSHOT_EXE 指向 Windows Engine 中的 gen_snapshot.exe。' >&2
+  exit 127
+fi
+
+exec env WINEDEBUG="${WINEDEBUG:--all}" "$wine_binary" "$snapshot_executable" "$@"

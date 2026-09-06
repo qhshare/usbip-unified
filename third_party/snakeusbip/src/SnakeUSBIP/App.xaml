@@ -1,0 +1,11 @@
+﻿<!--
+    SnakeUSBIP - (c) 2025-2026 SnakeFoxu
+    Source code not included in public distribution.
+    Download compiled binaries from: https://github.com/Snakefoxu/SnakeUSBIP/releases
+    License: GPL-3.0
+-->
+<Application x:Class="SnakeUSBIP.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Application resources omitted from public repository -->
+</Application>

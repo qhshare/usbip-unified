@@ -1,0 +1,29 @@
+name: usbip_unified
+description: Cross-platform USB/IP manager for Linux and Windows.
+publish_to: none
+version: 0.1.0
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - offline/windows/x64/
+    - offline/windows/arm64/
+    - offline/linux/kali-amd64/
+    - offline/linux/kali-i386/
+    - offline/linux/kali-arm64/
+    - offline/linux/kali-armhf/
+    - offline/linux/debian-bookworm-amd64/
+    - offline/licenses/
+    - offline/install-linux-offline.sh
+    - offline/install-windows-offline.ps1
