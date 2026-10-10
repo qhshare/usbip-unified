@@ -30,7 +30,10 @@ else
   printf 'PASS: no private key material found in source tree\n'
 fi
 
-if find . -type d -name .git -not -path './.git' -not -path './.git/*' -print -quit | grep -q .; then
+if find . \
+    \( -path './.git' -o -path './.dart_tool' -o -path './.tmp' \
+       -o -path './build' -o -path './dist' \) -prune -o \
+    -type d -name .git -print -quit | grep -q .; then
   printf 'FAIL: nested Git metadata exists under third_party\n' >&2
   printf '      remove it before vendoring; revisions are tracked in third_party/SOURCES.lock.\n' >&2
   fail=1

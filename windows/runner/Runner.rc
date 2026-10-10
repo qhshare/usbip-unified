@@ -3,6 +3,13 @@
 #pragma code_page(65001)
 #include "resource.h"
 
+#ifdef __MINGW32__
+// CMake treats .manifest as a normal source for MinGW and does not embed it
+// into the PE resource section. Add it explicitly so usbipd operations receive
+// the requireAdministrator UAC prompt on portable builds.
+1 RT_MANIFEST "runner.exe.manifest"
+#endif
+
 #define APSTUDIO_READONLY_SYMBOLS
 /////////////////////////////////////////////////////////////////////////////
 //

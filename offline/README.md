@@ -12,7 +12,7 @@ installation only for a concrete operating system and architecture combination.
 
 | Target | Directory | Included resources | Roles |
 | --- | --- | --- | --- |
-| Windows x64 | `windows/x64/` | `usbipd-win_5.3.0_x64.msi`, `USBip-0.9.7.7-x64.exe` | Server + client |
+| Windows x64 | `windows/x64/` | `usbipd-win_5.3.0_x64.msi`, `VC_redist.x64.exe`, official `USBip-0.9.8.0-x64.exe` client installer | Server + client |
 | Windows ARM64 | `windows/arm64/` | `usbipd-win_5.3.0_arm64.msi`, `USBip-0.9.7.5-arm64-release.exe` | Server + client |
 | Kali amd64 | `linux/kali-amd64/` | `usbip`, `libudev1`, `libwrap0`, `usb.ids` `.deb` | Server + client |
 | Kali i386 | `linux/kali-i386/` | `usbip`, `libudev1`, `libwrap0`, `usb.ids` `.deb` | Server + client |
@@ -23,6 +23,36 @@ installation only for a concrete operating system and architecture combination.
 Windows x86/32-bit is intentionally absent. Current `usbipd-win` and
 `usbip-win2` resources used by this project do not provide a complete supported
 32-bit Windows driver combination.
+
+The Windows x64 client resource is the official `USBip-0.9.8.0-x64.exe`
+installer. The offline script first installs the bundled Microsoft Visual C++
+x64 runtime, then executes the official installer. The official installer owns
+the user-space files, DLLs, signed `usbip2_ude` and `usbip2_filter` driver
+packages, driver services, and virtual USB device node. This project does not
+manually copy a fixed `client/` directory and does not call `pnputil` directly.
+The runtime is required by `usbipw.exe`; without it Windows may report that the
+executable cannot be found even when the file exists. The `-Server` switch
+installs only `usbipd-win`; `-Client` installs the runtime and official client;
+using both switches installs both roles.
+
+Do not reintroduce the legacy `USBip-0.9.7.7-x64.exe` resource, a manually
+assembled `client/` directory, or legacy `usbip_vhci` files into the x64 bundle.
+Mixing the old device model with the official usbip-win2 installer can leave a
+successful-looking file copy without a usable virtual USB device. The ARM64
+target still uses its architecture-specific installer. If the official
+installer registers the driver service but Windows has not created the virtual
+USB device node yet, restart Windows and run the environment check again.
+
+The bundled VC++ runtime is downloaded from Microsoft's official endpoint:
+
+```text
+https://aka.ms/vs/17/release/vc_redist.x64.exe
+SHA256: cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b
+```
+
+Redistributing this file must comply with the Microsoft Visual C++ Redistributable
+license. See `licenses/` and review the current Microsoft license terms before
+publishing a release.
 
 ## What is not included
 
@@ -47,7 +77,8 @@ does not remove that requirement.
    `data/flutter_assets/offline/`.
 2. The app detects operating system, distribution and CPU architecture.
 3. It extracts only the selected resource set to a temporary directory such as
-   `/tmp/usbip-unified-offline-XXXXXX/`.
+   `/tmp/usbip-unified-offline-XXXXXX/` on Linux or `%TEMP%\\usbip-unified-offline-*`
+   on Windows.
 4. It invokes the platform installer with elevated privileges.
 5. It removes the temporary directory after the installer exits.
 
@@ -79,7 +110,10 @@ Windows, from PowerShell on a matching host:
 ```
 
 Use `-Server` or `-Client` alone when only one role is required. The script
-relaunches itself with UAC when necessary. Windows x86 is rejected explicitly.
+relaunches itself with UAC when necessary. On x64, `-Client` installs the
+Microsoft VC++ runtime and runs the official `USBip-0.9.8.0-x64.exe` installer,
+which registers the client and its drivers. The project does not invoke
+`pnputil` directly. Windows x86 is rejected explicitly.
 
 ## Integrity and licenses
 
@@ -100,6 +134,9 @@ find . -type f ! -name SHA256SUMS -printf '%P\0' \
 ```
 
 The license texts under `licenses/` must remain with redistributable binaries.
+The x64 client payload is from `usbip-win2`; the x64 VC++ runtime is a
+Microsoft redistributable and must be distributed according to Microsoft's
+license terms. Do not replace it with a locally compiled or unverified DLL.
 Also review the upstream release license and notices before publishing a new
 version. Resource versions and their known limitations are documented in the
 root `README.md` and `CHANGELOG.md`.

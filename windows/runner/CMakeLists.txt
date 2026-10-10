@@ -27,6 +27,13 @@ endif()
 # that need different build settings.
 apply_standard_settings(${BINARY_NAME})
 
+# The application manifest requires elevation for USB/IP operations. Visual
+# Studio's default linker UAC fragment is asInvoker, which conflicts with the
+# custom manifest above, so let that manifest provide the UAC declaration.
+if(MSVC)
+  target_link_options(${BINARY_NAME} PRIVATE "/MANIFESTUAC:NO")
+endif()
+
 # Add preprocessor definitions for the build version.
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION=\"${FLUTTER_VERSION}\"")
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_MAJOR=${FLUTTER_VERSION_MAJOR}")
@@ -46,7 +53,13 @@ else()
   target_link_libraries(${BINARY_NAME} PRIVATE dwmapi)
   if(MINGW)
     # The Flutter runner exports wWinMain; select MinGW's Unicode startup code.
-    target_link_options(${BINARY_NAME} PRIVATE -municode)
+    # Static-link the MinGW runtimes so the portable bundle does not depend on
+    # libgcc_s_seh-1.dll or libstdc++-6.dll being installed on Windows.
+    target_link_options(${BINARY_NAME} PRIVATE
+      -municode
+      -static-libgcc
+      -static-libstdc++
+    )
   endif()
 endif()
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")

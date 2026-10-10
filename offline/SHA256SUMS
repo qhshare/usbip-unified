@@ -1,6 +1,6 @@
-73aeb36863fd056341c685fbbe22905f1c58bb87bc02aff5303e3be574ec84b3  README.md
+188318d06e9d1b321020beb4f16a0397af8ec3c860ce4ea1212188aeb0c82df6  README.md
 e3e948adbe1155be3502b02573396405d3b082324d39ebedfcb90e061c42d7a8  install-linux-offline.sh
-cc67a167f99e8f1d11ba8915e37a823965aab1b16d16b87cc86111d79c73f387  install-windows-offline.ps1
+31a8671688f9da674983cc5e5edffbbd56ce6d78f74a2cfb0174d13061ae2967  install-windows-offline.ps1
 723572b1487231edcc3a2594da30961c693da7a0d7b676ca718fe3391920b8ca  licenses/usbip-win2-LICENSE.txt
 fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0  licenses/usbipd-win-GPL-3.0-only.txt
 c0d83437fdb016cb289436f49f28a36be44b3e8f1f2498c7e3a095f709c0d6f8  linux/debian-bookworm-amd64/libnsl2_1.3.0-2_amd64.deb
@@ -26,5 +26,6 @@ bec267a9f40f0e87d0689023dc10cce0d334268320d23a6ef6680922e0981a83  linux/kali-arm
 a80ea8d0bbc3af08cdc47e0403e003cbf34834a4a87d8e8aab8b253d13dd4dd8  linux/kali-i386/usbip_2.0+7.0.12-2kali1_i386.deb
 0dc47a895ab6dddcfa5ef4cd12014f9f3515770bec706773c9e9f5f876ebccb5  windows/arm64/USBip-0.9.7.5-arm64-release.exe
 efd7c4eb99b144c1623e616064a7b262f83d0994b0d7fde16c95d4b07528b24d  windows/arm64/usbipd-win_5.3.0_arm64.msi
-51620fa5f9f8be5932bc9d786deee557ce06d5407a99cab490dcfac71f185fea  windows/x64/USBip-0.9.7.7-x64.exe
+81f426741f7ee2ed991febe24a22daca8400b6ae2f171054e3fb404897e15d39  windows/x64/USBip-0.9.8.0-x64.exe
+cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b  windows/x64/VC_redist.x64.exe
 1c984914aec944de19b64eff232421439629699f8138e3ddc29301175bc6d938  windows/x64/usbipd-win_5.3.0_x64.msi

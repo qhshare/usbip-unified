@@ -7,16 +7,18 @@ provides one interface for sharing local USB devices, connecting remote USB
 devices, binding, unbinding, attaching, detaching, configuring ports, and
 installing the native USB/IP components required by the host platform.
 
-> Project status: early release (`0.1.0`). The Linux workflow has been verified
-> in the development environment. Windows drivers, UAC elevation, firewall
-> behavior, and real USB/IP connections still require verification on Windows
-> x64 and ARM64 hardware.
+> Project status: early release (`0.1.0`). End-to-end USB/IP validation has
+> been completed between Windows x64 and Linux amd64 using a loopback CH340
+> serial device in both directions. Other USB device classes, concurrent
+> devices, hot-plug/reconnect, high-bandwidth workloads, and long-duration
+> stability still require testing.
 
 ## Contents
 
 - [Features](#features)
 - [How It Works](#how-it-works)
 - [Support Matrix](#support-matrix)
+- [Hardware Validation](#hardware-validation)
 - [Run in 30 Seconds](#run-in-30-seconds)
 - [Build from Source](#build-from-source)
 - [Linux](#linux)
@@ -93,7 +95,7 @@ boundary and extension model.
 | Linux Kali armhf | Yes | Yes | `.deb` | Requires a matching ARM hard-float kernel |
 | Debian 12 amd64 | Yes | Yes | `.deb` | Uses a separate Debian 12 resource set |
 | Ubuntu / Fedora / Arch / Alpine | Depends on system tools | Depends on system tools | None | Use online installation or distribution-specific manual installation |
-| Windows x64 | Yes | Yes | MSI + EXE | `usbipd-win` and `usbip-win2` resources included |
+| Windows x64 | Yes | Yes | MSI + VC++ runtime + client files + drivers | `usbipd-win`, `usbipw.exe`, and virtual USB drivers included |
 | Windows ARM64 | Yes | Yes | MSI + EXE | Uses matching ARM64 tools and drivers |
 | Windows x86 (32-bit) | No | No | None | No complete supported 32-bit driver combination from the current upstreams |
 | macOS | No | No | None | No maintained macOS USB/IP backend in this project |
@@ -102,6 +104,23 @@ boundary and extension model.
 that every hardware device, kernel version, driver version, or network topology
 has been tested on real hardware. Linux `.deb` files are not generic Linux
 packages, and Windows offline resources must match the system architecture.
+
+## Hardware Validation
+
+On 2026-10-10, end-to-end USB/IP validation was completed between Windows x64
+and Linux amd64 with a CH340 USB-to-serial adapter (`1a86:7523`). Its TX/RX
+pins were shorted to form a loopback for bidirectional data testing.
+
+| Direction | Server | Client | Result |
+| --- | --- | --- | --- |
+| Windows -> Linux | Windows 10 x64, `usbipd-win 5.3.0` | Kali amd64, `usbip` + `vhci_hcd` | Linux created `/dev/ttyUSB0` and loaded `ch341-uart`; at `9600 8N1` in raw mode, `55 AA 01 02 03 0D 0A` was sent and the identical bytes were received |
+| Linux -> Windows | Kali amd64, `usbip` server | Windows 10 x64, `USBip-win2 0.9.8.0` | Windows attached the device as a COM serial port, and bidirectional send/receive testing passed |
+
+These results validate the basic Windows server, Linux client, Linux server,
+and Windows client workflows in the current release, as well as the
+bidirectional CH340 serial data path. They do not establish compatibility for
+all USB device classes, concurrent devices, hot-plug/reconnect, sleep/resume,
+high-bandwidth workloads, or long-duration operation.
 
 ## Run in 30 Seconds
 
@@ -270,8 +289,14 @@ usbipw.exe list -r <server-address>
 Client installation involves a kernel driver and UAC elevation. Use a package
 matching the Windows architecture, read the corresponding release notes, and
 create a system restore point before installing a driver. The bundled client
-versions are x64 `0.9.7.7` and ARM64 `0.9.7.5`. These are the resource choices
-in this repository, not a claim that every release is suitable for production.
+versions are x64 `0.9.8.0` and ARM64 `0.9.7.5`. The x64 release executes the
+official USBip-win2 installer as a versioned unit. That installer owns the
+client files, DLLs, signed driver packages, driver services, and virtual USB
+device registration. The application does not copy a fixed `client/`
+directory and does not call `pnputil` directly. The x64 package also includes
+the Microsoft Visual C++ runtime required by `usbipw.exe`. These are the
+resource choices in this repository, not a claim that every release is
+suitable for production.
 
 The Windows client remote port must match the actual server port or the FRP
 mapping port. The application accepts Windows client ports from `1024` through
@@ -349,7 +374,14 @@ Offline installation resources are stored in `offline/` and included as
 Flutter assets in the desktop release bundle. The current resource set
 contains:
 
-- Windows x64/ARM64: `usbipd-win` MSI and `usbip-win2` client installers.
+- Windows x64: the `usbipd-win_5.3.0_x64.msi` server installer, the official
+  `VC_redist.x64.exe`, and the official `USBip-0.9.8.0-x64.exe` USBip-win2
+  client installer. The USBip-win2 installer deploys the client files, DLLs,
+  signed driver packages, driver services, and virtual USB device node as one
+  versioned installation. The Flutter application does not copy a fixed
+  `client/` payload and does not call `pnputil` directly.
+- Windows ARM64: the `usbipd-win` MSI and an ARM64 installer containing the
+  matching client and driver set.
 - Kali amd64/i386/arm64/armhf: matching `.deb` packages.
 - Debian 12 amd64: a separate Debian 12 `.deb` package set.
 - `offline/licenses/`: license texts shipped with the redistributable binaries.
@@ -361,6 +393,31 @@ Verify the resources:
 cd offline
 sha256sum -c SHA256SUMS
 ```
+
+The Windows offline installer supports separate roles: `-Server` installs only
+the sharing side, `-Client` installs the client and virtual USB drivers, and
+`-Server -Client` installs both. On Windows x64, `-Client` first installs the
+official Microsoft Visual C++ x64 runtime and then executes the bundled
+`USBip-0.9.8.0-x64.exe` installer. The official installer owns the client
+files, DLLs, driver services, and virtual USB device registration; the project
+script does not manually copy client files or call `pnputil`. ARM64 uses its
+architecture-specific installer. The script verifies `usbipd.exe`, the
+`usbipd` service, `usbipd list`, the client executable, the client driver
+services, and the virtual USB device node after installation. If the driver
+service exists but Windows has not created the virtual device node yet, the
+result is marked as requiring a restart rather than being reported as fully
+ready.
+
+The bundled VC++ runtime is downloaded from Microsoft's official endpoint:
+
+```text
+https://aka.ms/vs/17/release/vc_redist.x64.exe
+SHA256: cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b
+```
+
+Redistribution must comply with the Microsoft Visual C++ Redistributable
+license. Keep the applicable notices in `offline/licenses/` and review the
+current Microsoft terms before publishing a release.
 
 When the target system has no matching resource, the application disables
 offline installation and provides online installation and manual guidance.
@@ -377,8 +434,14 @@ target.
 
 The Flutter desktop application is distributed as an extract-and-run directory.
 It does not require an MSI, `.deb`, registry entries, or the Flutter SDK on the
-target machine. Native USB/IP tools and drivers still need to be supplied by
-the target system or by the application's installer.
+target machine. The **Check environment** action is read-only and the portable
+EXE does not install system components just by starting. Native USB/IP tools and
+drivers still need to be supplied by the target system or by the application's
+installer. On Windows, the server requires the registered `usbipd` service and
+the client requires the `usbip2_ude`/`usbip2_filter` kernel drivers and virtual
+USB device node, so the full Windows backend cannot be completely portable. If
+those components are already installed and pass the environment check, the GUI
+can be used without installing them again.
 
 Build Linux on a Linux host:
 
@@ -386,6 +449,19 @@ Build Linux on a Linux host:
 ./tool/bootstrap.sh
 ./tool/package-portable.sh linux
 ```
+
+If the build host cannot reach `pub.dev` but has already run `flutter pub get`
+successfully, reuse the existing `.dart_tool/package_config.json`:
+
+```bash
+./tool/package-portable.sh linux --no-pub
+```
+
+`--no-pub` skips dependency resolution and `flutter clean`, which is useful for
+repeating a build offline. If `.dart_tool/package_config.json` is missing, run
+`flutter pub get` once on a network-enabled host. After changing dependencies or
+`pubspec.yaml`, run the normal dependency-resolution flow instead of reusing the
+old package configuration.
 
 Output:
 
@@ -400,6 +476,35 @@ tool\bootstrap.bat
 tool\package-portable.bat x64
 tool\package-portable.bat arm64
 ```
+
+If the Windows build host already has a usable
+`.dart_tool\package_config.json` but cannot reach `pub.dev`, skip dependency
+resolution with:
+
+```bat
+tool\package-portable.bat x64 --no-pub
+tool\package-portable.bat arm64 --no-pub
+```
+
+The default packaging flow runs `flutter pub get` and `flutter clean`, rebuilds
+the Windows release, and verifies that
+`data\flutter_assets\offline\install-windows-offline.ps1` matches the source
+file. `--no-pub` reuses the existing dependency configuration and skips those
+two preparation steps. Both modes perform the bundle checks. After changing the
+source or offline installer, do not reuse an old `build/windows` directory or
+ZIP; run the packaging command again. Windows PowerShell 5.1 can misread UTF-8
+scripts without a BOM, so the offline installer is intentionally ASCII-only to
+prevent encoding-related parse errors.
+The build number is shown in the native window title, the page subtitle, and
+the startup log, for example `0.1.0+20260908.1`. If that build number is not
+visible, the running `usbip_unified.exe` is an older release. Replacing only a
+PowerShell script in a temporary directory does not update the GUI's
+executable discovery code; rebuild and extract the complete portable ZIP.
+
+After launching the new package, confirm the build number first, then run the
+environment check and refresh devices. Do not mix files from an old extracted
+directory with a new package; extract the complete
+`dist\\usbip-unified-windows-x64-portable.zip` (or ARM64 archive).
 
 Output:
 
@@ -563,9 +668,10 @@ confirming an operation.
   manual packages.
 - Linux kernel modules and Windows virtual USB drivers cannot be made universal
   by copying them into a Flutter runtime bundle.
-- Windows driver signing, UAC, firewall behavior, sleep/resume, and combinations
-  of real USB devices still require verification on the corresponding Windows
-  versions.
+- Current hardware validation only covers a CH340 serial device between Windows
+  x64 and Linux amd64. Other USB device classes, concurrent devices,
+  hot-plug/reconnect, sleep/resume, high-bandwidth workloads, and long-duration
+  stability still require separate testing.
 
 ## Related Documentation
 

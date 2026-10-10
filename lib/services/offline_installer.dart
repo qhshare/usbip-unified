@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'usbip_service.dart';
@@ -25,17 +26,138 @@ class OfflineTargetInfo {
   final String message;
 }
 
+/// Paths reported by the Windows offline installer after it finishes.
+///
+/// The installer can be asked to install both roles in one invocation, so the
+/// result must be parsed as two independent values. Keeping this parser here
+/// also prevents the UI from accidentally assigning `usbipd.exe` to the
+/// Windows client field.
+class InstalledToolPaths {
+  const InstalledToolPaths({this.server, this.client});
+
+  final String? server;
+  final String? client;
+
+  static InstalledToolPaths parse(String output) {
+    return InstalledToolPaths(
+      server: _marker(output, 'SERVER_PATH') ??
+          _value(output, 'Server executable:'),
+      client: _marker(output, 'CLIENT_PATH') ??
+          _value(output, 'Client executable:'),
+    );
+  }
+
+  static String? _marker(String output, String name) {
+    final matches = RegExp('^\\s*${RegExp.escape(name)}\\|([^\\r\\n]*)',
+            multiLine: true, caseSensitive: false)
+        .allMatches(output)
+        .map((match) => match.group(1)?.trim())
+        .whereType<String>()
+        .where((value) => value.isNotEmpty)
+        .toList();
+    return matches.isEmpty ? null : matches.last;
+  }
+
+  static String? _value(String output, String label) {
+    final match = RegExp('^\\s*${RegExp.escape(label)}\\s*(.+)',
+            multiLine: true, caseSensitive: false)
+        .firstMatch(output);
+    final value = match?.group(1)?.trim();
+    return value == null || value.isEmpty ? null : value;
+  }
+}
+
+/// Machine-readable result emitted by `install-windows-offline.ps1`.
+///
+/// The human-readable installer log is intentionally kept alongside these
+/// markers. The markers let the UI distinguish a successful server-only
+/// installation from a client whose executable exists but whose virtual bus
+/// still needs a reboot or PnP enumeration.
+class WindowsOfflineInstallStatus {
+  const WindowsOfflineInstallStatus({
+    this.installStatus = 'unknown',
+    this.restartRequired = false,
+    this.serverStatus = 'unknown',
+    this.clientStatus = 'unknown',
+    this.clientDriverStatus = 'unknown',
+    this.clientDeviceStatus = 'unknown',
+    this.hasStructuredStatus = false,
+  });
+
+  final String installStatus;
+  final bool restartRequired;
+  final String serverStatus;
+  final String clientStatus;
+  final String clientDriverStatus;
+  final String clientDeviceStatus;
+  final bool hasStructuredStatus;
+
+  bool get success => installStatus == 'success';
+  bool get partial => installStatus == 'partial';
+  bool get failed => installStatus == 'failed';
+
+  static WindowsOfflineInstallStatus parse(String output) {
+    String? marker(String name) {
+      final matches = RegExp('^\\s*${RegExp.escape(name)}\\|([^\\r\\n]*)',
+              multiLine: true, caseSensitive: false)
+          .allMatches(output)
+          .map((match) => match.group(1)?.trim().toLowerCase())
+          .whereType<String>()
+          .where((value) => value.isNotEmpty)
+          .toList();
+      return matches.isEmpty ? null : matches.last;
+    }
+
+    final installStatus = marker('INSTALL_STATUS');
+    final restart = marker('RESTART_REQUIRED');
+    return WindowsOfflineInstallStatus(
+      installStatus: installStatus ?? 'unknown',
+      restartRequired: restart == 'true' || restart == '1' || restart == 'yes',
+      serverStatus: marker('SERVER_STATUS') ?? 'unknown',
+      clientStatus: marker('CLIENT_STATUS') ?? 'unknown',
+      clientDriverStatus: marker('CLIENT_DRIVER_STATUS') ?? 'unknown',
+      clientDeviceStatus: marker('CLIENT_DEVICE_STATUS') ?? 'unknown',
+      hasStructuredStatus: installStatus != null,
+    );
+  }
+
+  String summary(
+      {required bool serverRequested, required bool clientRequested}) {
+    final parts = <String>[];
+    if (serverRequested) parts.add('共享端=$serverStatus');
+    if (clientRequested) {
+      parts.add('客户端=$clientStatus');
+      parts.add('驱动=$clientDriverStatus');
+      parts.add('虚拟设备=$clientDeviceStatus');
+    }
+    if (restartRequired) parts.add('需要重启 Windows');
+    return parts.isEmpty ? '未返回角色状态' : parts.join('，');
+  }
+}
+
 /// Extracts the bundled native installers to a temporary directory and runs
 /// the platform installer. The assets are shipped inside the Flutter bundle;
 /// kernel modules and driver registration still require system privileges.
 class OfflineInstaller {
+  /// Fingerprint of the Windows installer flow shipped in this source tree.
+  ///
+  /// A user can easily start an older extracted portable directory after a
+  /// newer ZIP was released. Checking this marker prevents the old
+  /// `usbip_vhci.inf`/`pnputil` flow from being mistaken for the current
+  /// signed usbip-win2 installer flow.
+  static const windowsInstallerRevision = 'official-usbip-win2-0.9.8.0-v2';
+
+  static bool hasExpectedWindowsInstallerRevision(String script) => script
+      .contains('USBIP_UNIFIED_INSTALLER_REVISION|$windowsInstallerRevision');
+
   /// Windows resources per architecture. Upstream `usbipd-win` and
   /// `usbip-win2` publish x64 and ARM64 builds only; there is no 32-bit
   /// Windows driver to bundle.
   static const windowsBundles = <String, List<String>>{
     'x64': [
       'offline/windows/x64/usbipd-win_5.3.0_x64.msi',
-      'offline/windows/x64/USBip-0.9.7.7-x64.exe',
+      'offline/windows/x64/VC_redist.x64.exe',
+      'offline/windows/x64/USBip-0.9.8.0-x64.exe',
     ],
     'arm64': [
       'offline/windows/arm64/usbipd-win_5.3.0_arm64.msi',
@@ -81,6 +203,135 @@ class OfflineInstaller {
 
   static const windowsScript = 'offline/install-windows-offline.ps1';
   static const linuxScript = 'offline/install-linux-offline.sh';
+
+  /// Returns bundled Windows client installers that cannot be loaded from the
+  /// current Flutter asset bundle. Online installation uses this before it
+  /// installs anything so an incomplete or stale portable package fails
+  /// clearly instead of leaving a partial role installation behind.
+  Future<List<String>> missingWindowsClientAssets(
+      {String? overrideArchitecture}) async {
+    if (!Platform.isWindows) return const [];
+    final architecture = overrideArchitecture ?? detectArchitecture();
+    final assets = switch (architecture) {
+      'x64' => const [
+          'offline/windows/x64/VC_redist.x64.exe',
+          'offline/windows/x64/USBip-0.9.8.0-x64.exe',
+        ],
+      'arm64' => const [
+          'offline/windows/arm64/USBip-0.9.7.5-arm64-release.exe',
+        ],
+      _ => const [],
+    };
+    final missing = <String>[];
+    for (final asset in assets) {
+      try {
+        await rootBundle.load(asset);
+      } catch (_) {
+        missing.add(asset);
+      }
+    }
+    try {
+      final scriptBytes = await rootBundle.load(windowsScript);
+      final script = const Utf8Decoder(allowMalformed: true).convert(scriptBytes
+          .buffer
+          .asUint8List(scriptBytes.offsetInBytes, scriptBytes.lengthInBytes));
+      if (!hasExpectedWindowsInstallerRevision(script)) {
+        missing.add('$windowsScript（旧版安装流程，需包含 $windowsInstallerRevision）');
+      }
+    } catch (_) {
+      missing.add('$windowsScript（无法读取）');
+    }
+    return missing;
+  }
+
+  String windowsClientBundlePreflightMessage(List<String> missing) {
+    return [
+      '当前便携包不完整或仍是旧版 Windows 客户端流程，已停止安装。',
+      '缺少或不匹配的客户端资源：',
+      ...missing.map((asset) => '  $asset'),
+      '请完全退出旧版应用，删除旧解压目录，重新解压包含完整 data/flutter_assets 的最新 Windows Release。',
+      '新流程应执行官方 USBip-0.9.8.0-x64.exe，不应出现 pnputil、usbip_vhci.inf 或 Copying client file。',
+    ].join('\n');
+  }
+
+  /// Detects a Flutter/Dart frontend built for the wrong operating system.
+  ///
+  /// The Windows runner can still start if a Linux `app.dill` was passed to a
+  /// Windows AOT snapshotter. In that case `Platform.isLinux` is true inside
+  /// a `.exe`, so the application selects the Linux role and looks for the
+  /// Linux installer even though the host is Windows.
+  String? runtimePlatformMismatch() {
+    final executable = Platform.resolvedExecutable.toLowerCase();
+    final operatingSystem = Platform.operatingSystem.toLowerCase();
+    final version = Platform.operatingSystemVersion.toLowerCase();
+    final environmentOs = Platform.environment['OS']?.toLowerCase();
+    final hasWindowsEnvironment = environmentOs == 'windows_nt' ||
+        Platform.environment.containsKey('WINDIR') ||
+        version.contains('windows');
+    final executableLooksWindows = executable.endsWith('.exe');
+
+    if (executableLooksWindows && operatingSystem != 'windows') {
+      return '可执行文件是 Windows EXE，但 Dart 运行时报告为 $operatingSystem。'
+          '这通常表示 Windows 构建复用了 Linux 的 app.dill/AOT 前端缓存。';
+    }
+    if (hasWindowsEnvironment && operatingSystem != 'windows') {
+      return 'Windows 环境变量/系统版本已检测到 Windows，但 Dart 运行时报告为 '
+          '$operatingSystem。请重新执行原生 Windows Release 构建。';
+    }
+    return null;
+  }
+
+  /// Describes the executable and Flutter asset locations used by the current
+  /// process. A portable Windows build can otherwise be mistaken for a newly
+  /// built one when several extracted releases are on disk.
+  Future<List<String>> runtimeDiagnostics() async {
+    final lines = <String>[
+      '运行平台：${Platform.operatingSystem} ${Platform.operatingSystemVersion}',
+      'Dart 可执行文件：${Platform.resolvedExecutable}',
+      '当前工作目录：${Directory.current.path}',
+    ];
+    final platformMismatch = runtimePlatformMismatch();
+    lines.add(platformMismatch == null
+        ? '平台一致性检查：通过'
+        : '平台一致性检查：失败：$platformMismatch');
+    if (Platform.isWindows) {
+      lines.add(
+          'Windows 进程架构：${Platform.environment['PROCESSOR_ARCHITEW6432'] ?? Platform.environment['PROCESSOR_ARCHITECTURE'] ?? '未知'}');
+    }
+
+    try {
+      final executableDirectory = File(Platform.resolvedExecutable).parent;
+      final dataDirectory =
+          Directory('${executableDirectory.path}${Platform.pathSeparator}data');
+      final assetDirectory = Directory(
+          '${dataDirectory.path}${Platform.pathSeparator}flutter_assets');
+      final scriptName = Platform.isWindows ? windowsScript : linuxScript;
+      final scriptFile = File(
+          '${assetDirectory.path}${Platform.pathSeparator}${scriptName.replaceAll('/', Platform.pathSeparator)}');
+      lines.add('便携包目录：${executableDirectory.path}');
+      lines.add('Flutter data 目录存在：${await dataDirectory.exists()}');
+      lines.add('Flutter assets 目录存在：${await assetDirectory.exists()}');
+      lines.add('内置安装脚本路径：${scriptFile.path}');
+      lines.add('内置安装脚本存在：${await scriptFile.exists()}');
+      if (await scriptFile.exists()) {
+        final bytes = await scriptFile.readAsBytes();
+        final text = const Utf8Decoder(allowMalformed: true).convert(bytes);
+        final marker = Platform.isWindows
+            ? text.contains(r"$ErrorActionPreference = 'Stop'") &&
+                text.contains('Target architecture:')
+            : text.contains('set -euo pipefail');
+        lines.add('内置安装脚本大小：${bytes.length} 字节');
+        lines.add('内置安装脚本格式检查：${marker ? '通过' : '未通过'}');
+        if (Platform.isWindows) {
+          lines.add(
+              'Windows 安装器版本检查：${hasExpectedWindowsInstallerRevision(text) ? '通过（$windowsInstallerRevision）' : '未通过（当前便携包可能是旧版）'}');
+        }
+      }
+    } catch (error) {
+      lines.add('便携包路径诊断异常：$error');
+    }
+    return lines;
+  }
 
   /// Maps the running machine to a bundled architecture directory.
   /// Returns null when no bundled resource set matches the host.
@@ -282,7 +533,8 @@ Arch Linux：
   Future<CommandResult> install(
       {required bool server,
       required bool client,
-      String? overrideArchitecture}) async {
+      String? overrideArchitecture,
+      void Function(String line)? onOutput}) async {
     if (!Platform.isWindows && !Platform.isLinux) {
       return const CommandResult(
         command: 'offline installer',
@@ -305,6 +557,22 @@ Arch Linux：
         output:
             unsupportedMessage(overrideArchitecture ?? detectArchitecture()),
       );
+    }
+    if (Platform.isWindows && client) {
+      // Keep the explicit offline action protected by the same bundle check as
+      // the online installer. Otherwise an old extracted Flutter release can
+      // still invoke the legacy pnputil/client payload directly.
+      final missing = await missingWindowsClientAssets(
+          overrideArchitecture: bundle.architecture);
+      if (missing.isNotEmpty) {
+        final output = windowsClientBundlePreflightMessage(missing);
+        onOutput?.call(output);
+        return CommandResult(
+          command: 'Windows client bundle preflight',
+          code: 2,
+          output: output,
+        );
+      }
     }
     late final Directory root;
     try {
@@ -332,16 +600,32 @@ Arch Linux：
       if (client) args.add('-Client');
       args.addAll(['-Architecture', bundle.architecture]);
       args.addAll(['-ResultFile', resultFile]);
-      final result = await _run('powershell.exe', args);
+      // Keep the exact role flags in the returned output. This is important
+      // because the same bundled script supports server-only, client-only,
+      // and complete installation, and the elevated child owns the real log.
+      final requestedRoles = [
+        if (server) 'Server',
+        if (client) 'Client',
+      ].join(' ');
+      final result = await _run('powershell.exe', args, onOutput: onOutput);
+      // The elevated child writes this file after the UAC prompt. Check the
+      // file separately from its contents: an existing but empty file means
+      // the child started and then failed before it could write a message.
+      final resultFileExists = await File(resultFile).exists();
       final installerOutput = await _readTextFile(resultFile);
+      final output = _mergeInstallerOutput(result.output, installerOutput,
+          exitCode: result.code,
+          resultFileExists: resultFileExists,
+          resultFilePath: resultFile,
+          requestedRoles: requestedRoles,
+          architecture: bundle.architecture);
       await _cleanup(root);
-      return installerOutput.isEmpty
-          ? result
-          : CommandResult(
-              command: result.command,
-              code: result.code,
-              output: installerOutput,
-            );
+      return CommandResult(
+        command:
+            '${result.command} # roles: ${requestedRoles.isEmpty ? 'none' : requestedRoles}',
+        code: result.code,
+        output: output,
+      );
     }
     final script =
         '${root.path}${Platform.pathSeparator}install-linux-offline.sh';
@@ -380,6 +664,50 @@ Arch Linux：
     }
   }
 
+  /// UAC relaunches the PowerShell script as a second process. Depending on
+  /// the Windows PowerShell version, its console output and the result file
+  /// can contain different subsets of the log. Keep both sources so the GUI
+  /// can still parse the verified executable paths and show the real failure
+  /// when the elevated process exits early.
+  String _mergeInstallerOutput(String processOutput, String resultOutput,
+      {required int exitCode,
+      required bool resultFileExists,
+      String? resultFilePath,
+      String requestedRoles = '',
+      String architecture = ''}) {
+    final lines = <String>[];
+    final seen = <String>{};
+    void add(String value) {
+      for (final line in value.split(RegExp(r'\r?\n'))) {
+        final normalized = line.trim();
+        if (normalized.isEmpty) continue;
+        final key = normalized.toLowerCase();
+        if (seen.add(key)) lines.add(normalized);
+      }
+    }
+
+    add(processOutput);
+    add(resultOutput);
+    lines.insert(0, 'PowerShell installer exit code: $exitCode');
+    lines.insert(1, 'Installer result file exists: $resultFileExists');
+    if (resultFilePath != null && resultFilePath.isNotEmpty) {
+      lines.insert(2, 'Installer result file path: $resultFilePath');
+    }
+    lines.insert(3,
+        'Requested Windows roles: ${requestedRoles.isEmpty ? 'none' : requestedRoles}');
+    if (architecture.isNotEmpty) {
+      lines.insert(4, 'Requested Windows architecture: $architecture');
+    }
+    if (!resultFileExists) {
+      lines.add(
+          'Installer result file was not created. The elevated process may not have started.');
+    } else if (resultOutput.isEmpty) {
+      lines.add(
+          'Installer result file was created but contains no diagnostic output.');
+    }
+    return lines.join('\n');
+  }
+
   /// Human readable reason why a host has no bundled resource set.
   String unsupportedMessage(String architecture) {
     if (Platform.isWindows && architecture == 'x86') {
@@ -415,23 +743,39 @@ Arch Linux：
     }
   }
 
-  Future<CommandResult> _run(String executable, List<String> args) async {
+  Future<CommandResult> _run(String executable, List<String> args,
+      {void Function(String line)? onOutput}) async {
     final command = ([executable, ...args]).join(' ');
     try {
       final process = await Process.start(executable, args);
-      final stdout =
-          process.stdout.transform(const SystemEncoding().decoder).join();
-      final stderr =
-          process.stderr.transform(const SystemEncoding().decoder).join();
+      final output = StringBuffer();
+      Future<void> collect(Stream<List<int>> stream) async {
+        final bytes = <int>[];
+        await for (final chunk in stream) {
+          bytes.addAll(chunk);
+        }
+        final decoded = UsbIpService.decodeProcessOutput(
+          bytes,
+          windows: Platform.isWindows,
+        );
+        for (final line in const LineSplitter().convert(decoded)) {
+          final value = line.trim();
+          if (value.isEmpty) continue;
+          output.writeln(value);
+          onOutput?.call(value);
+        }
+      }
+
+      final stdoutDone = collect(process.stdout);
+      final stderrDone = collect(process.stderr);
       final code = await process.exitCode.timeout(const Duration(minutes: 10),
           onTimeout: () {
         process.kill(ProcessSignal.sigterm);
         return 124;
       });
+      await Future.wait([stdoutDone, stderrDone]);
       return CommandResult(
-          command: command,
-          code: code,
-          output: '${await stdout}${await stderr}'.trim());
+          command: command, code: code, output: output.toString().trim());
     } catch (error) {
       return CommandResult(
           command: command, code: 1, output: '离线安装启动失败：$error');

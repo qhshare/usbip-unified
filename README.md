@@ -6,14 +6,16 @@
 管理本机 USB 设备共享、远程 USB 设备连接、绑定、解绑、断开、端口和底层
 组件安装。
 
-> 项目状态：早期版本（`0.1.0`）。Linux 流程已在开发环境验证；Windows 的
-> 驱动、UAC、防火墙和真实 USB/IP 连接必须在 Windows x64/ARM64 真机继续验证。
+> 项目状态：早期版本（`0.1.0`）。已在 Windows x64 与 Linux amd64 真机上
+> 完成 CH340 串口的双向 USB/IP 穿透验证；其他 USB 设备类型、多设备并发、
+> 热插拔、重连、高带宽和长时间稳定性仍需继续验证。
 
 ## 目录
 
 - [功能](#功能)
 - [工作原理](#工作原理)
 - [支持矩阵](#支持矩阵)
+- [真机验证记录](#真机验证记录)
 - [30 秒运行](#30-秒运行)
 - [从源码构建](#从源码构建)
 - [Linux](#linux)
@@ -78,7 +80,7 @@ Flutter 负责界面、角色状态、参数校验、命令调用、输出解析
 | Linux Kali armhf | 支持 | 支持 | `.deb` | 目标设备需要匹配的 ARM hard-float 内核 |
 | Debian 12 amd64 | 支持 | 支持 | `.deb` | 单独使用 Debian 12 资源 |
 | Ubuntu/Fedora/Arch/Alpine | 取决于系统工具 | 取决于系统工具 | 不提供 | 使用在线安装或发行版手动安装 |
-| Windows x64 | 支持 | 支持 | MSI + EXE | 内置 `usbipd-win` 和 `usbip-win2` |
+| Windows x64 | 支持 | 支持 | MSI + VC++ Runtime + 客户端文件 + 驱动 | 内置 `usbipd-win`、`usbipw.exe` 和虚拟 USB 驱动 |
 | Windows ARM64 | 支持 | 支持 | MSI + EXE | 使用 ARM64 对应驱动和工具 |
 | Windows x86（32 位） | 不支持 | 不支持 | 不提供 | 当前上游没有可用的完整 32 位驱动组合 |
 | macOS | 不支持 | 不支持 | 不提供 | 当前项目没有维护 macOS USB/IP 后端 |
@@ -86,6 +88,22 @@ Flutter 负责界面、角色状态、参数校验、命令调用、输出解析
 “支持”表示代码和命令适配，不等于每种硬件、内核、驱动版本都已经真机
 验证。Linux 离线 `.deb` 不是通用 Linux 安装包；Windows 离线资源也必须与
 系统架构匹配。
+
+## 真机验证记录
+
+2026-10-10 已完成 Windows x64 与 Linux amd64 之间的 CH340 USB 转串口
+双向穿透验证。测试设备为 `1a86:7523` CH340，TX/RX 已短接形成回环，用于
+确认远程串口的双向数据收发。
+
+| 方向 | 共享端 | 客户端 | 验证结果 |
+| --- | --- | --- | --- |
+| Windows -> Linux | Windows 10 x64，`usbipd-win 5.3.0` | Kali amd64，`usbip` + `vhci_hcd` | Linux 识别为 `/dev/ttyUSB0`，加载 `ch341-uart`；以 `9600 8N1` 原始模式发送 `55 AA 01 02 03 0D 0A`，收到完全相同的数据 |
+| Linux -> Windows | Kali amd64，`usbip` 共享端 | Windows 10 x64，`USBip-win2 0.9.8.0` | Windows 成功连接并识别为 COM 串口，双向收发测试通过 |
+
+以上结果验证了当前版本的 Windows 共享端、Linux 客户端、Linux 共享端和
+Windows 客户端基础流程，以及 CH340 串口穿透的双向数据链路。该结论不代表
+所有 USB 设备类型、多设备并发、热插拔、睡眠恢复、高带宽或长时间运行场景
+都已经完成验证。
 
 ## 30 秒运行
 
@@ -157,7 +175,11 @@ tool\package-portable.bat arm64
 
 ### 在线安装
 
-设置页的“在线安装”调用当前系统包管理器。也可以手动安装：
+设置页的“自动安装组件”会调用当前系统包管理器。Windows 的服务端先尝试
+`winget`，如果源损坏、证书异常或网络不可用，会自动改用便携包内的签名
+`usbipd-win` MSI；Windows 客户端直接使用便携包内的官方 `USBip-win2` 安装器。
+因此日志中看到 `winget` 失败并不代表本次安装失败，必须继续查看后面的“本地
+MSI 回退”和“安装后环境检查”结果。也可以手动安装：
 
 ```bash
 # Debian / Ubuntu / Kali
@@ -238,8 +260,10 @@ usbipw.exe list -r <服务端地址>
 
 客户端安装会涉及内核驱动和 UAC。请使用与 Windows 架构匹配的安装包，安装前
 阅读对应 Release 说明并创建系统还原点。当前仓库内置的 Windows 客户端版本
-是 x64 `0.9.7.7`，ARM64 `0.9.7.5`；这是当前资源选择，不代表所有新版本都
-适合生产使用。
+是 x64 `0.9.8.0`，ARM64 `0.9.7.5`。x64 使用官方 USBip-win2 安装器，由安装器
+一次性处理客户端文件、DLL、签名驱动、驱动服务和虚拟 USB 设备节点；应用不再
+手工复制 DLL，也不直接调用 `pnputil`。x64 还会先安装随包提供的 Microsoft
+Visual C++ Runtime。以上是当前资源选择，不代表所有新版本都适合生产使用。
 
 Windows 客户端的远程端口必须与对端服务端实际监听端口或 FRP 映射端口一致。
 Windows 客户端端口输入限制为 `1024-65535`，Linux 客户端允许 `1-65535`。
@@ -308,7 +332,11 @@ usbipw.exe detach -p 00
 离线安装资源位于 `offline/`，并作为 Flutter asset 打包到桌面发布目录。完整
 资源包括：
 
-- Windows x64/ARM64：`usbipd-win` MSI 和 `usbip-win2` 客户端安装程序。
+- Windows x64：共享端 `usbipd-win_5.3.0_x64.msi`、官方
+  `VC_redist.x64.exe` 和官方 `USBip-0.9.8.0-x64.exe` 安装器。x64 安装器由
+  USBip-win2 官方程序负责部署客户端、DLL、签名驱动、驱动服务和虚拟 USB
+  设备节点；应用不会手工复制 `client/` 文件，也不会直接调用 `pnputil`。
+- Windows ARM64：`usbipd-win` MSI 和包含对应客户端、驱动的 ARM64 安装程序。
 - Kali amd64/i386/arm64/armhf：对应架构的 `.deb`。
 - Debian 12 amd64：单独的 Debian 12 `.deb` 组合。
 - `offline/licenses/`：随二进制资源分发的许可证文本。
@@ -327,10 +355,58 @@ sha256sum -c SHA256SUMS
 `offline/install-linux-offline.sh`、`offline/README.md`、`pubspec.yaml` 和
 `SHA256SUMS` 中同步登记。
 
+Windows 离线安装脚本支持分别安装角色：`-Server` 只安装共享端，`-Client`
+只安装客户端和虚拟 USB 驱动，`-Server -Client` 同时安装两者。Windows x64 的
+`-Client` 会先安装官方 Microsoft Visual C++ x64 Runtime，再启动官方
+`USBip-0.9.8.0-x64.exe` 安装器，由它注册客户端文件、驱动和虚拟 USB 设备节点。
+脚本成功后会检查 `usbipd.exe`、`usbipd` 服务、`usbipd list`，以及客户端的
+`usbipw.exe`、USB/IP 驱动服务和虚拟设备节点。驱动服务已注册但设备节点尚未出现
+时，会标记为需要重启，而不是报告完整成功。GUI 也会执行安装后环境检查。若 MSI 显示成功但旧应用仍
+提示“未检测到 USB/IP 工具”，通常是 Windows 更新了系统 `PATH`，而已经运行
+的旧 Flutter 进程没有获得新环境变量。必须关闭旧 GUI，并使用重新构建的完整
+Windows 便携包；不能只替换临时目录中的 PowerShell 脚本。新版 GUI 还会直接
+检查 `C:\Program Files\usbipd-win\usbipd.exe` 和服务配置，不依赖旧 `PATH`。
+新版构建号会同时显示在系统窗口标题、页面副标题和启动日志中，例如
+`0.1.0+20260908.1`。如果这些位置没有显示该构建号，说明运行的仍是旧版
+`usbip_unified.exe`；只把脚本复制到临时目录不会更新 GUI 的工具探测代码。
+
+可以在 PowerShell 中独立确认服务端安装结果：
+
+```powershell
+Test-Path 'C:\Program Files\usbipd-win\usbipd.exe'
+Get-Service usbipd
+& 'C:\Program Files\usbipd-win\usbipd.exe' list
+Test-Path 'C:\Program Files\USBip\usbipw.exe'
+Test-Path 'C:\Program Files\USBip\libusbip.dll'
+Test-Path 'C:\Program Files\USBip\resources.dll'
+& 'C:\Program Files\USBip\usbipw.exe' port
+Test-Path "$env:WINDIR\System32\msvcp140.dll"
+Test-Path "$env:WINDIR\System32\vcruntime140.dll"
+Test-Path "$env:WINDIR\System32\vcruntime140_1.dll"
+```
+
+服务端文件、服务状态、VC++ Runtime 和客户端文件都应检查通过，`usbipw.exe port` 应能启动并输出
+本机客户端端口状态。若服务端文件存在但旧 GUI 仍报错，通常是旧包问题；关闭旧 GUI，使用重新构建
+的 `dist\usbip-unified-windows-x64-portable.zip` 或 ARM64 包。若文件不存在，
+则应查看离线安装日志、UAC 和 Windows 事件查看器。
+
+如果在设置中填写“工具路径”，可以填写 `usbipd.exe` 或 `usbip-win2` 安装目录；
+新版会自动在目录中寻找对应 exe。安装成功后脚本会把服务不存在、服务未运行或
+`usbipd list` 失败视为安装失败，不再显示“安装成功但应用不可用”。
+
 ## 免安装发布包
 
 Flutter 桌面应用本身是解压即用目录，不需要 MSI、deb、注册表或 Flutter SDK。
-底层 USB/IP 工具和驱动仍需由目标系统已有环境或应用内安装器提供。
+启动应用不会自动安装任何系统组件；“检查环境”也只读检查，不会修改系统。
+但是完整的 Windows USB/IP 功能不能只靠这个 EXE：服务端需要注册 `usbipd`
+Windows 服务，客户端需要注册 `usbip2_ude`、`usbip2_filter` 内核驱动和虚拟
+USB 设备节点。这些组件必须由目标系统预先安装，或由应用内安装器以管理员权限
+安装。也就是说，应用可以免安装运行，但 Windows USB/IP 底层组件不能在未注册
+驱动和服务的情况下做到完全绿色运行。
+
+如果目标系统已经安装并通过“检查环境”验证了这些组件，可以只携带并运行便携
+应用，不会重复安装；必要时可在“工具路径”中填写实际的 `usbipd.exe` 或
+`usbip.exe` 路径。
 
 Linux 在 Linux 主机上构建：
 
@@ -338,6 +414,18 @@ Linux 在 Linux 主机上构建：
 ./tool/bootstrap.sh
 ./tool/package-portable.sh linux
 ```
+
+如果构建机当前无法访问 `pub.dev`，但项目已经成功执行过一次
+`flutter pub get`，可以复用现有的 `.dart_tool/package_config.json`：
+
+```bash
+./tool/package-portable.sh linux --no-pub
+```
+
+`--no-pub` 会跳过依赖解析和 `flutter clean`，因此适合离线重复打包；如果
+`.dart_tool/package_config.json` 不存在，必须先在可联网环境执行
+`flutter pub get`。依赖或 `pubspec.yaml` 发生变化后，应重新执行正常的
+`flutter pub get`，不要继续复用旧依赖。
 
 输出：
 
@@ -352,6 +440,24 @@ tool\bootstrap.bat
 tool\package-portable.bat x64
 tool\package-portable.bat arm64
 ```
+
+如果 Windows 构建机已经有可用的 `.dart_tool\package_config.json`，但当前
+无法访问 `pub.dev`，可以跳过依赖解析：
+
+```bat
+tool\package-portable.bat x64 --no-pub
+tool\package-portable.bat arm64 --no-pub
+```
+
+默认打包脚本会执行 `flutter pub get` 和 `flutter clean`，再重新构建 Windows
+Release；`--no-pub` 模式会复用现有依赖并跳过这两步。两种模式都会校验包内
+`data\flutter_assets\offline\install-windows-offline.ps1` 与源码完全一致。
+源码或离线脚本更新后，不要继续复制旧的 `build/windows` 或旧的 ZIP；必须重新
+执行上面的命令。Windows PowerShell 5.1 对无 BOM 的 UTF-8 脚本兼容性较差，当前
+离线安装脚本特意保持 ASCII 编码，以避免中文乱码导致脚本解析失败。
+启动新包后，请先确认窗口标题或页面副标题中出现当前构建号，再点击“检查环境”
+和“刷新设备”。不要在旧解压目录中直接覆盖单个 exe 或临时安装脚本；应删除旧
+目录后解压完整的 `dist\usbip-unified-windows-x64-portable.zip`（或 ARM64 包）。
 
 输出：
 
@@ -488,8 +594,9 @@ USB/IP 默认使用 TCP `3240`，协议本身没有端到端加密和身份认�
 - Linux 离线包只覆盖文档列出的发行版和架构；其他发行版请使用在线安装或
   手动安装匹配包。
 - Linux 内核模块和 Windows 虚拟 USB 驱动不能由 Flutter 运行时跨版本通用打包。
-- Windows 真机上的驱动签名、UAC、防火墙、睡眠恢复和多种 USB 设备组合仍需
-  在对应 Windows 版本上验证。
+- 当前真机联调只覆盖 Windows x64 与 Linux amd64 之间的 CH340 串口；其他
+  USB 设备类型、多设备并发、热插拔、睡眠恢复、高带宽和长时间稳定性仍需
+  分别验证。
 
 ## 相关文档
 

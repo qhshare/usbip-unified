@@ -170,6 +170,22 @@ tool\package-portable.bat x64
 tool\package-portable.bat arm64
 ```
 
+Windows portable packages must be built on a native Windows build host. A Linux
+or macOS Dart frontend must not be combined with the Windows release Engine;
+the packaging script rejects that combination so an EXE cannot report Linux at
+runtime.
+
+On a Windows build host with an existing dependency configuration but no
+`pub.dev` access, skip dependency resolution and cleanup with:
+
+```bat
+tool\package-portable.bat x64 --no-pub
+tool\package-portable.bat arm64 --no-pub
+```
+
+`--no-pub` requires `.dart_tool\package_config.json`. After changing
+`pubspec.yaml` or dependency versions, run the normal `flutter pub get` flow.
+
 Outputs:
 
 ```text

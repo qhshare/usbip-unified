@@ -1,9 +1,20 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'services/usbip_service.dart';
 import 'services/offline_installer.dart';
 import 'services/online_installer.dart';
+import 'services/app_settings.dart';
+
+const appBuild = '0.1.0+20261010.17';
+
+class _InstallRoles {
+  const _InstallRoles({required this.server, required this.client});
+
+  final bool server;
+  final bool client;
+}
 
 void main() => runApp(const UsbIpApp());
 
@@ -12,7 +23,7 @@ class UsbIpApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) => MaterialApp(
         debugShowCheckedModeBanner: false,
-        title: 'USBIP Unified Manager',
+        title: 'USBIP Unified Manager $appBuild',
         theme: ThemeData(
             colorScheme: ColorScheme.fromSeed(
                 seedColor: const Color(0xff1769aa),
@@ -39,8 +50,12 @@ class _ManagerPageState extends State<ManagerPage> {
   final service = UsbIpService();
   final offlineInstaller = OfflineInstaller();
   final onlineInstaller = OnlineInstaller();
+  final settingsStore = AppSettingsStore();
   final remoteHost = TextEditingController();
-  final path = TextEditingController();
+  // Windows uses different executables for the two directions. Keep these
+  // paths independent when the user switches roles in one session.
+  final serverToolPath = TextEditingController();
+  final clientToolPath = TextEditingController();
   final serverPort = TextEditingController(text: '3240');
   final clientPort = TextEditingController(text: '3240');
   UsbIpRole role =
@@ -52,6 +67,7 @@ class _ManagerPageState extends State<ManagerPage> {
   OfflineTargetInfo? offlineTarget;
   bool busy = false;
   int tab = 0;
+  Timer? _settingsSaveTimer;
 
   String get roleName => switch (role) {
         UsbIpRole.linux => 'Linux 原生 USB/IP',
@@ -69,6 +85,9 @@ class _ManagerPageState extends State<ManagerPage> {
       };
   bool get isClient => service.isClient(role);
   bool get isServer => service.isServer(role);
+  TextEditingController get activeToolPathController =>
+      isClient ? clientToolPath : serverToolPath;
+  String get activeToolPath => activeToolPathController.text;
   int get sharePort => int.tryParse(serverPort.text.trim()) ?? 0;
   int get remotePort => int.tryParse(clientPort.text.trim()) ?? 0;
   int get effectiveSharePort => Platform.isWindows ? 3240 : sharePort;
@@ -100,6 +119,17 @@ class _ManagerPageState extends State<ManagerPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      log('应用版本：$appBuild');
+      await _loadSettings();
+      final runtime = await offlineInstaller.runtimeDiagnostics();
+      for (final line in runtime) {
+        log(line);
+      }
+      if (offlineInstaller.runtimePlatformMismatch() != null) {
+        log('已停止自动刷新：当前便携包的 Dart 前端与宿主系统不匹配。'
+            '请删除旧解压目录，并使用原生 Windows + Visual Studio 重新构建的最新 ZIP。');
+        return;
+      }
       await refreshLocalAddresses();
       await inspectOfflineTarget();
       if (widget.autoRefresh) await refresh();
@@ -108,11 +138,55 @@ class _ManagerPageState extends State<ManagerPage> {
 
   @override
   void dispose() {
+    _settingsSaveTimer?.cancel();
     remoteHost.dispose();
-    path.dispose();
+    serverToolPath.dispose();
+    clientToolPath.dispose();
     serverPort.dispose();
     clientPort.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadSettings() async {
+    final settings = await settingsStore.load();
+    if (!mounted) return;
+    serverToolPath.text = settings.serverToolPath;
+    clientToolPath.text = settings.clientToolPath;
+    remoteHost.text = settings.remoteHost;
+    if (settings.serverPort.trim().isNotEmpty) {
+      serverPort.text = settings.serverPort;
+    }
+    if (settings.clientPort.trim().isNotEmpty) {
+      clientPort.text = settings.clientPort;
+    }
+    final configured = <String>[
+      if (settings.serverToolPath.isNotEmpty) '共享端路径已加载',
+      if (settings.clientToolPath.isNotEmpty) '客户端路径已加载',
+    ];
+    log(configured.isEmpty
+        ? '未找到本地工具路径配置，将执行自动探测。'
+        : '已加载本地配置：${configured.join('、')}');
+  }
+
+  void _scheduleSaveSettings() {
+    _settingsSaveTimer?.cancel();
+    _settingsSaveTimer = Timer(const Duration(milliseconds: 400), () {
+      _saveSettings();
+    });
+  }
+
+  Future<void> _saveSettings() async {
+    try {
+      await settingsStore.save(AppSettings(
+        serverToolPath: serverToolPath.text.trim(),
+        clientToolPath: clientToolPath.text.trim(),
+        remoteHost: remoteHost.text.trim(),
+        serverPort: serverPort.text.trim(),
+        clientPort: clientPort.text.trim(),
+      ));
+    } catch (error) {
+      if (mounted) log('本地配置保存失败：$error');
+    }
   }
 
   void log(String value) {
@@ -165,31 +239,59 @@ class _ManagerPageState extends State<ManagerPage> {
     setState(() => busy = true);
     log('正在刷新 $roleName ...');
     try {
+      await _saveSettings();
       await refreshLocalAddresses();
       final host = isClient ? remoteHost.text.trim() : '';
+      final requestedToolPath = activeToolPath.trim();
+      final defaultTool = service.executable(role, '');
+      log('当前运行角色：$roleName');
+      log('当前需要的工具：$defaultTool');
+      log('已保存的工具路径：${requestedToolPath.isEmpty ? '未设置（自动探测）' : requestedToolPath}');
+      final detectedTool =
+          await service.findExecutable(role, customPath: activeToolPath);
+      if (detectedTool == null) {
+        log('工具探测失败：未找到 $roleName 可执行文件。请查看下方命令输出中的已检查路径。');
+        if (Platform.isWindows) {
+          final diagnostics = await service.windowsToolDiagnostics(role,
+              customPath: activeToolPath);
+          for (final line in diagnostics) {
+            log(line);
+          }
+        }
+      } else {
+        log('工具探测成功：$detectedTool');
+        if (requestedToolPath.isNotEmpty &&
+            !_sameExecutablePath(requestedToolPath, detectedTool)) {
+          activeToolPathController.text = detectedTool;
+          await _saveSettings();
+          log('已将失效的旧工具路径替换为自动探测到的路径：$detectedTool');
+        }
+      }
+      // Use the path returned by discovery for every command in this refresh.
+      // Otherwise a stale saved path could pass the probe but still be sent
+      // to list()/port() and make the UI report a false tool failure.
+      final toolPathForCommand = detectedTool ?? activeToolPath;
+      log('本次刷新最终使用的工具路径：${toolPathForCommand.trim().isEmpty ? '未解析，将由执行器再次探测' : toolPathForCommand}');
       final result = await service.list(role, host,
-          remotePort: remotePort, customPath: path.text);
+          remotePort: remotePort, customPath: toolPathForCommand);
+      if (Platform.isWindows && detectedTool != null && result.code == 127) {
+        log('工具文件已找到，但启动失败；开始输出 Windows 诊断信息。');
+        final diagnostics = await service.windowsToolDiagnostics(role,
+            customPath: toolPathForCommand);
+        for (final line in diagnostics) {
+          log(line);
+        }
+      }
       CommandResult? ports;
       if (isClient && result.ok) {
-        ports = await service.listPorts(role, customPath: path.text);
+        ports = await service.listPorts(role, customPath: toolPathForCommand);
       }
       if (!mounted) return;
 
       var parsed = service.parse(result.output, role: role);
       if (isClient && ports != null) {
-        final attached = service.attachedPorts(ports.output);
-        parsed = [
-          for (final item in parsed)
-            item.copyWith(
-                attached: attached.containsKey(item.id),
-                attachedPort: attached[item.id],
-                state: !ports.ok
-                    ? '连接状态未知'
-                    : attached.containsKey(item.id)
-                        ? '已连接'
-                        : '未连接',
-                connectionStateKnown: ports.ok)
-        ];
+        parsed =
+            service.mergeClientDevices(parsed, ports.output, portsOk: ports.ok);
         log('\$ ${ports.command}');
         if (ports.output.isNotEmpty) log('命令输出：${ports.output}');
         if (!ports.ok) {
@@ -199,7 +301,10 @@ class _ManagerPageState extends State<ManagerPage> {
       } else if (isServer && service.isLinux(role)) {
         parsed = [
           for (final item in parsed)
-            _withLinuxBoundState(item, await service.isBound(role, item.id))
+            _withLinuxBoundState(
+                item,
+                await service.isBound(role, item.id,
+                    customPath: toolPathForCommand))
         ];
       }
       setState(() {
@@ -221,6 +326,16 @@ class _ManagerPageState extends State<ManagerPage> {
 
   UsbDevice _withLinuxBoundState(UsbDevice item, bool bound) =>
       item.copyWith(bound: bound, state: bound ? '已共享' : '未共享');
+
+  bool _sameExecutablePath(String first, String second) {
+    String normalize(String value) =>
+        value.trim().replaceAll('\\', '/').replaceAll(RegExp(r'/+'), '/');
+    final left = normalize(first);
+    final right = normalize(second);
+    return Platform.isWindows
+        ? left.toLowerCase() == right.toLowerCase()
+        : left == right;
+  }
 
   Future<void> execute(
       String name, Future<CommandResult> Function() task) async {
@@ -248,7 +363,7 @@ class _ManagerPageState extends State<ManagerPage> {
     return service.share(
       role,
       item.id,
-      customPath: path.text,
+      customPath: activeToolPath,
       port: effectiveSharePort,
       onStep: (step) {
         if (mounted) log(step);
@@ -275,7 +390,8 @@ class _ManagerPageState extends State<ManagerPage> {
           output: '设备当前有客户端连接，请先断开客户端。');
     }
     log('准备解绑设备：BUSID=${item.id}');
-    final result = await service.unbind(role, item.id, customPath: path.text);
+    final result =
+        await service.unbind(role, item.id, customPath: activeToolPath);
     log('命令完成：${result.command}（退出码 ${result.code}）');
     if (result.output.isNotEmpty) log('命令输出：${result.output}');
     log(result.ok ? '解绑操作完成，设备不再由 USB/IP 导出。' : '解绑失败，设备仍可能处于共享状态。');
@@ -292,7 +408,7 @@ class _ManagerPageState extends State<ManagerPage> {
           output: '未找到本机 USB/IP 端口。请先刷新客户端连接状态。');
     }
     log('准备断开：BUSID=${item.id}，本机端口=$port');
-    final result = await service.detach(role, port, customPath: path.text);
+    final result = await service.detach(role, port, customPath: activeToolPath);
     log('命令完成：${result.command}（退出码 ${result.code}）');
     if (result.output.isNotEmpty) log('命令输出：${result.output}');
     log(result.ok ? '断开操作完成，设备已从本机卸载。' : '断开失败，设备可能仍处于连接状态。');
@@ -301,10 +417,13 @@ class _ManagerPageState extends State<ManagerPage> {
 
   Future<void> installOffline() async {
     if (busy) return;
-    final server = isServer;
-    final client = isClient;
+    final roles = await _selectInstallRoles('离线安装');
+    if (roles == null) return;
+    final server = roles.server;
+    final client = roles.client;
     setState(() => busy = true);
-    log('正在执行离线组件安装...');
+    log('正在执行离线组件安装（${_installRolesLabel(roles)}）...');
+    log('离线安装角色：共享端=${server ? '是' : '否'}，客户端=${client ? '是' : '否'}');
     try {
       final result =
           await offlineInstaller.install(server: server, client: client);
@@ -313,7 +432,70 @@ class _ManagerPageState extends State<ManagerPage> {
       if (!result.ok) {
         _message(result.code == 3 ? '包管理器正在使用' : '离线安装失败', result.output);
       } else {
-        _message('离线安装完成', '底层组件安装完成。重新点击刷新设备即可检查状态。');
+        var message = '底层组件安装完成。';
+        if (Platform.isWindows) {
+          final installStatus =
+              WindowsOfflineInstallStatus.parse(result.output);
+          log('安装结果文件：${_installerResultLine(result.output)}');
+          log('安装状态：${installStatus.hasStructuredStatus ? installStatus.installStatus : '旧版安装脚本未返回结构化状态'}');
+          log('安装角色状态：${installStatus.summary(serverRequested: server, clientRequested: client)}');
+          final installedTools = InstalledToolPaths.parse(result.output);
+          // The installer has verified these paths after UAC/MSI completes.
+          // Always replace a stale persisted path: retaining it makes the
+          // next refresh ignore the executable that was just installed.
+          if (installedTools.server != null) {
+            serverToolPath.text = installedTools.server!;
+            log('安装器已确认 Windows 共享端路径：${installedTools.server}');
+          }
+          if (installedTools.client != null) {
+            clientToolPath.text = installedTools.client!;
+            log('安装器已确认 Windows 客户端路径：${installedTools.client}');
+          }
+          if (server && installedTools.server == null) {
+            log('安装器没有确认 Windows 共享端可执行文件路径，请查看完整安装日志。');
+          }
+          if (client && installedTools.client == null) {
+            log('安装器没有确认 Windows 客户端可执行文件路径，请查看完整安装日志。');
+          }
+          await _saveSettings();
+          // An MSI can update PATH while this Flutter process keeps its old
+          // environment. Check the installed locations immediately and show
+          // an actionable result before the automatic refresh.
+          final check = await onlineInstaller.check(
+              server: server,
+              client: client,
+              serverPath: serverToolPath.text,
+              clientPath: clientToolPath.text);
+          log('安装后环境检查：${check.output}');
+          final statusPrefix = installStatus.restartRequired
+              ? '安装文件已完成，但 Windows 要求重启后才能枚举客户端虚拟 USB 设备。'
+              : installStatus.partial
+                  ? '安装文件已写入，但所选组件尚未全部就绪。'
+                  : installStatus.failed
+                      ? '安装脚本报告失败。'
+                      : '';
+          if (check.ok &&
+              installStatus.success &&
+              !installStatus.restartRequired) {
+            message = '底层组件安装完成，已检测到可用组件。\n${check.output}';
+          } else {
+            message = [
+              if (statusPrefix.isNotEmpty) statusPrefix,
+              if (!installStatus.hasStructuredStatus)
+                '当前安装脚本没有返回结构化状态，可能仍在运行旧版 Release。',
+              '安装状态：${installStatus.summary(serverRequested: server, clientRequested: client)}',
+              '安装后环境检查：${check.output}',
+              if (installStatus.restartRequired)
+                '请重启 Windows，然后重新启动完整的新 Release 并点击“检查环境”。',
+              if (client && installStatus.clientDeviceStatus != 'available')
+                '客户端必须同时具备 usbipw.exe、驱动服务和虚拟 USB 设备节点；只安装 -Server 不会提供客户端。',
+              '若仍然失败，请完全关闭旧版便携包，解压并运行重新构建的完整目录；也可以在“工具路径”中填写实际 exe 的完整路径。',
+            ].join('\n');
+          }
+        } else {
+          message = '底层组件安装完成。重新点击刷新设备即可检查状态。';
+        }
+        _message('离线安装完成', message);
       }
     } catch (error) {
       if (mounted) {
@@ -323,6 +505,14 @@ class _ManagerPageState extends State<ManagerPage> {
     } finally {
       if (mounted) setState(() => busy = false);
     }
+    if (mounted) await refresh();
+  }
+
+  String _installerResultLine(String output) {
+    final match = RegExp(r'^Installer result file path:\s*(.+)$',
+            multiLine: true, caseSensitive: false)
+        .firstMatch(output);
+    return match?.group(1)?.trim() ?? '未返回';
   }
 
   void showManualInstallGuide() {
@@ -333,8 +523,11 @@ class _ManagerPageState extends State<ManagerPage> {
     if (busy) return;
     setState(() => busy = true);
     try {
-      final result =
-          await onlineInstaller.check(server: isServer, client: isClient);
+      final result = await onlineInstaller.check(
+          server: isServer,
+          client: isClient,
+          serverPath: serverToolPath.text,
+          clientPath: clientToolPath.text);
       if (!mounted) return;
       log(result.output);
       _message(result.ok ? '环境检查完成' : '未检测到组件', result.output);
@@ -350,28 +543,143 @@ class _ManagerPageState extends State<ManagerPage> {
 
   Future<void> installOnline() async {
     if (busy) return;
-    final server = isServer;
-    final client = isClient;
+    // Windows online setup is intentionally complete. The server package and
+    // the bundled usbip-win2 client are separate installers; allowing this
+    // entry point to install only the server is how a portable package can
+    // appear to succeed while usbipw.exe and its driver are still absent.
+    final roles = Platform.isWindows
+        ? const _InstallRoles(server: true, client: true)
+        : await _selectInstallRoles('自动安装组件');
+    if (roles == null) return;
+    final server = roles.server;
+    final client = roles.client;
     setState(() => busy = true);
-    log('正在通过系统包管理器在线安装...');
+    log('正在自动安装系统组件（${_installRolesLabel(roles)}）...');
+    log('安装角色：共享端=${server ? '是' : '否'}，客户端=${client ? '是' : '否'}');
+    if (Platform.isWindows) {
+      log('Windows 自动安装固定执行完整安装，不提供仅共享端模式。');
+      log('本次必须执行：共享端 usbipd-win + 客户端 usbipw.exe + 客户端驱动。');
+      log('说明：Flutter 应用本身是免安装便携版；本次操作会向 Windows 注册 USB/IP 服务、驱动和虚拟 USB 设备。');
+    }
+    var streamedOutput = false;
     try {
-      final result =
-          await onlineInstaller.install(server: server, client: client);
-      if (!mounted) return;
-      log(result.output.isEmpty ? result.command : result.output);
-      if (!result.ok) {
-        _message('在线安装失败', result.output);
+      if (Platform.isWindows) {
+        log('正在检查 winget；Windows 服务端优先尝试在线安装，失败后自动使用包内 MSI。');
+        log('Windows 安装来源策略：服务端=winget，失败时=便携包内 usbipd-win MSI；客户端=便携包内官方 USBip-win2 安装器。');
+        log('Windows 共享端安装请求：${server ? '是' : '否'}');
+        log('Windows 客户端安装请求：${client ? '是' : '否'}');
+        if (client) {
+          log('Windows 客户端没有统一的 winget 安装包，将使用应用内客户端资源安装。');
+        } else {
+          log('winget 将以静默、非交互方式运行；如果出现 UAC，请在系统提示中确认。');
+        }
       } else {
-        _message('在线安装完成', '组件安装完成。重新点击刷新设备即可检查状态。');
+        log('正在检测 Linux 包管理器并安装 usbip...');
+      }
+      final result = await onlineInstaller.install(
+          server: server,
+          client: client,
+          onOutput: (line) {
+            if (mounted && line.trim().isNotEmpty) {
+              streamedOutput = true;
+              log(line);
+            }
+          });
+      if (!mounted) return;
+      // Keep streamed output responsive, then print the merged final result
+      // as well. The final result contains the elevated PowerShell output and
+      // the structured client/driver/device status that may not be visible in
+      // the parent process stream.
+      if (streamedOutput) {
+        log('自动安装最终汇总：');
+      }
+      log(result.output.isEmpty ? result.command : result.output);
+      if (Platform.isWindows) {
+        log('Windows 安装来源确认：服务端已按 winget -> 包内 MSI 回退策略执行；客户端使用包内官方 USBip-win2 安装器。');
+        final installedTools = InstalledToolPaths.parse(result.output);
+        final installStatus = WindowsOfflineInstallStatus.parse(result.output);
+        if (installedTools.server != null) {
+          serverToolPath.text = installedTools.server!;
+          log('安装器已确认 Windows 共享端路径：${installedTools.server}');
+        }
+        if (installedTools.client != null) {
+          clientToolPath.text = installedTools.client!;
+          log('安装器已确认 Windows 客户端路径：${installedTools.client}');
+        }
+        log('安装角色状态：${installStatus.summary(serverRequested: server, clientRequested: client)}');
+        if (client && !installStatus.hasStructuredStatus) {
+          log('客户端安装没有返回结构化状态；当前运行的可能是旧版 Release，无法确认驱动和虚拟 USB 设备。');
+        }
+        await _saveSettings();
+      }
+      final check = await onlineInstaller.check(
+          server: server,
+          client: client,
+          serverPath: serverToolPath.text,
+          clientPath: clientToolPath.text);
+      log('安装后环境检查：${check.output}');
+      if (!result.ok || !check.ok) {
+        _message(
+            '自动安装需要重新检查',
+            '安装命令退出码：${result.code}\n'
+                '${result.output.isEmpty ? result.command : result.output}\n'
+                '安装后环境检查：${check.output}\n'
+                '${client ? '本次包含 Windows 客户端安装；客户端必须同时具备 usbipw.exe、驱动服务和虚拟 USB 设备节点。\n' : ''}'
+                '请根据日志补齐失败的角色；Windows 客户端如缺少驱动服务或虚拟 USB 设备，请以管理员身份重试并按提示重启。');
+      } else {
+        _message('组件安装完成', 'USB/IP 系统组件安装完成，已检测到可用工具。应用本身无需安装，重新点击刷新设备即可使用。');
       }
     } catch (error) {
       if (mounted) {
         log('在线安装异常：$error');
-        _message('在线安装失败', '$error');
+        _message('自动安装组件失败', '$error');
       }
     } finally {
       if (mounted) setState(() => busy = false);
     }
+  }
+
+  String _installRolesLabel(_InstallRoles roles) {
+    if (roles.server && roles.client) return 'Windows 服务端 + 客户端';
+    if (roles.server) return '共享端';
+    if (roles.client) return '客户端';
+    return '未选择角色';
+  }
+
+  Future<_InstallRoles?> _selectInstallRoles(String actionName) async {
+    if (!Platform.isWindows) {
+      return _InstallRoles(server: isServer, client: isClient);
+    }
+
+    final selected = await showDialog<_InstallRoles>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('$actionName范围'),
+        content: const Text('Windows 共享端和客户端是两套独立组件。\n\n'
+            '完整功能需要同时安装两者：共享端优先通过 winget 安装，失败时使用应用内 MSI；客户端使用应用内资源安装，'
+            '包括 usbipw.exe、驱动服务和虚拟 USB 设备节点。\n\n'
+            '仅安装共享端不会安装 Windows 客户端。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext,
+                const _InstallRoles(server: true, client: false)),
+            child: const Text('仅共享端'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext,
+                const _InstallRoles(server: false, client: true)),
+            child: const Text('仅客户端'),
+          ),
+          FilledButton(
+            autofocus: true,
+            onPressed: () => Navigator.pop(
+                dialogContext, const _InstallRoles(server: true, client: true)),
+            child: const Text('完整安装（推荐）'),
+          ),
+        ],
+      ),
+    );
+    return selected;
   }
 
   void _message(String title, String body) => showDialog<void>(
@@ -421,7 +729,7 @@ class _ManagerPageState extends State<ManagerPage> {
         execute(
             '连接',
             () => service.attach(role, remoteHost.text, item.id,
-                remotePort: remotePort, customPath: path.text));
+                remotePort: remotePort, customPath: activeToolPath));
         break;
       case 'detach':
         execute('断开', () => _detachWithLogs(item));
@@ -467,25 +775,43 @@ class _ManagerPageState extends State<ManagerPage> {
         ],
       );
 
-  Widget _topbar() => Padding(
-      padding: const EdgeInsets.fromLTRB(28, 18, 28, 12),
-      child: Row(children: [
-        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+  Widget _topbar() => LayoutBuilder(builder: (context, constraints) {
+        final title =
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('USBIP Unified',
+              overflow: TextOverflow.ellipsis,
               style: Theme.of(context)
                   .textTheme
                   .headlineSmall
                   ?.copyWith(fontWeight: FontWeight.w700)),
-          Text('跨平台 USB/IP 管理中心', style: Theme.of(context).textTheme.bodySmall)
-        ]),
-        const Spacer(),
-        _roleSelector(compact: true),
-        const SizedBox(width: 14),
-        Chip(
-            avatar: Icon(Icons.circle,
-                size: 10, color: busy ? Colors.orange : Colors.green),
-            label: Text(busy ? '执行中' : '就绪'))
-      ]));
+          Text('跨平台 USB/IP 管理中心 · $appBuild',
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall)
+        ]);
+        final controls = Wrap(
+            alignment: WrapAlignment.end,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 14,
+            runSpacing: 4,
+            children: [
+              _roleSelector(compact: true),
+              Chip(
+                  avatar: Icon(Icons.circle,
+                      size: 10, color: busy ? Colors.orange : Colors.green),
+                  label: Text(busy ? '执行中' : '就绪'))
+            ]);
+        return Padding(
+            padding: const EdgeInsets.fromLTRB(28, 18, 28, 12),
+            child: constraints.maxWidth < 760
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                        title,
+                        const SizedBox(height: 8),
+                        Align(alignment: Alignment.centerRight, child: controls)
+                      ])
+                : Row(children: [Expanded(child: title), controls]));
+      });
 
   Widget _roleSelector({bool compact = false}) => DropdownButtonHideUnderline(
           child: DropdownButton<UsbIpRole>(
@@ -862,7 +1188,10 @@ class _ManagerPageState extends State<ManagerPage> {
                                 labelText: '远程服务端地址',
                                 hintText: '例如 192.168.1.20 或主机名',
                                 border: OutlineInputBorder()),
-                            onChanged: (_) => setState(() {})),
+                            onChanged: (_) {
+                              _scheduleSaveSettings();
+                              setState(() {});
+                            }),
                         const SizedBox(height: 12),
                         TextField(
                             controller: clientPort,
@@ -872,21 +1201,29 @@ class _ManagerPageState extends State<ManagerPage> {
                                 hintText: '默认 3240，范围 1-65535',
                                 helperText: '必须与远程服务端监听端口或 FRP 映射端口一致',
                                 border: OutlineInputBorder()),
-                            onChanged: (_) => setState(() {})),
+                            onChanged: (_) {
+                              _scheduleSaveSettings();
+                              setState(() {});
+                            }),
                       ],
                       if (!isServer && !isClient)
                         const Text('当前角色没有可配置的连接方向，请切换到共享端或客户端。'),
                       const SizedBox(height: 16),
                       TextField(
-                          controller: path,
+                          controller: activeToolPathController,
                           decoration: InputDecoration(
-                              labelText: '工具路径（可选）',
+                              labelText:
+                                  isServer ? '共享端工具路径（可选）' : '客户端工具路径（可选）',
                               hintText: Platform.isWindows
-                                  ? (role == UsbIpRole.windowsServer
-                                      ? '留空使用 PATH 中的 usbipd'
-                                      : '留空使用 PATH 中的 usbipw.exe')
-                                  : '留空使用 PATH 中的 usbip',
-                              border: const OutlineInputBorder())),
+                                  ? (isServer
+                                      ? '留空自动查找 usbipd.exe'
+                                      : '留空自动查找 usbipw.exe、usbip.exe 或 usbip-win2.exe')
+                                  : '留空自动查找 usbip',
+                              helperText: isServer
+                                  ? '仅用于当前共享端角色；不会覆盖客户端路径'
+                                  : '仅用于当前客户端角色；不会覆盖共享端路径',
+                              border: const OutlineInputBorder()),
+                          onChanged: (_) => _scheduleSaveSettings()),
                       const SizedBox(height: 18),
                       Align(
                           alignment: Alignment.centerLeft,
@@ -907,7 +1244,7 @@ class _ManagerPageState extends State<ManagerPage> {
                         FilledButton.icon(
                             onPressed: busy ? null : installOnline,
                             icon: const Icon(Icons.cloud_download_outlined),
-                            label: const Text('在线安装')),
+                            label: const Text('自动安装组件')),
                         OutlinedButton.icon(
                             onPressed: busy || offlineTarget?.supported != true
                                 ? null
@@ -923,7 +1260,13 @@ class _ManagerPageState extends State<ManagerPage> {
                             onPressed: busy ? null : refresh,
                             icon: const Icon(Icons.refresh),
                             label: const Text('应用并刷新'))
-                      ])
+                      ]),
+                      const SizedBox(height: 8),
+                      Text(
+                          Platform.isWindows
+                              ? '应用本身是免安装便携版。“检查环境”不会修改系统；“自动安装组件”会以管理员权限注册 usbipd-win 服务、USB/IP 客户端驱动和虚拟 USB 设备。若目标机已经安装这些组件，可只检查环境或填写工具路径。'
+                              : '“检查环境”不会安装任何组件；安装按钮只用于安装系统 USB/IP 工具。',
+                          style: Theme.of(context).textTheme.bodySmall),
                     ]))),
         const SizedBox(height: 18),
         Card(

@@ -1,7 +1,7 @@
 name: usbip_unified
 description: Cross-platform USB/IP manager for Linux and Windows.
 publish_to: none
-version: 0.1.0
+version: 0.1.0+20261010.17
 environment:
   sdk: ">=3.3.0 <4.0.0"
 
@@ -17,8 +17,14 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - offline/windows/x64/
-    - offline/windows/arm64/
+    # Keep the Windows payload explicit. The x64 client is shipped as the
+    # official usbip-win2 installer so its executable, DLLs, signed drivers,
+    # and virtual device registration always come from one matching release.
+    - offline/windows/x64/usbipd-win_5.3.0_x64.msi
+    - offline/windows/x64/VC_redist.x64.exe
+    - offline/windows/x64/USBip-0.9.8.0-x64.exe
+    - offline/windows/arm64/usbipd-win_5.3.0_arm64.msi
+    - offline/windows/arm64/USBip-0.9.7.5-arm64-release.exe
     - offline/linux/kali-amd64/
     - offline/linux/kali-i386/
     - offline/linux/kali-arm64/

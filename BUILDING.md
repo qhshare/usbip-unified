@@ -160,6 +160,20 @@ tool\package-portable.bat x64
 tool\package-portable.bat arm64
 ```
 
+Windows 免安装包必须在原生 Windows 构建机生成。Linux/macOS 上的 Flutter
+前端产物和 Windows release Engine 不能混用；打包脚本会拒绝这种构建，避免
+生成可以启动但把 `Platform.operatingSystem` 编译成 Linux 的错误 EXE。
+
+Windows 构建机已有依赖但无法访问 `pub.dev` 时，可以跳过依赖解析和清理步骤：
+
+```bat
+tool\package-portable.bat x64 --no-pub
+tool\package-portable.bat arm64 --no-pub
+```
+
+`--no-pub` 要求 `.dart_tool\package_config.json` 已存在。修改 `pubspec.yaml`
+或依赖版本后，应先联网执行正常的 `flutter pub get`。
+
 输出：
 
 ```text
