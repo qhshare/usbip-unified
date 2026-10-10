@@ -41,8 +41,8 @@ validation of UAC, services, driver signing, firewall behavior, and USB/IP.
 ## 2. Get the source and verify resources
 
 ```bash
-git clone https://github.com/<user>/<repository>.git
-cd <repository>
+git clone https://github.com/qhshare/usbip-unified.git
+cd usbip-unified
 flutter pub get
 ```
 
@@ -161,7 +161,7 @@ Linux:
 ./tool/package-portable.sh linux
 ```
 
-Output: `dist/usbip-unified-linux-x64-portable.tar.gz`.
+Output: `dist/usbip-unified-linux-x64-portable-20261010.17.tar.gz`.
 
 Windows:
 
@@ -176,21 +176,24 @@ the packaging script rejects that combination so an EXE cannot report Linux at
 runtime.
 
 On a Windows build host with an existing dependency configuration but no
-`pub.dev` access, skip dependency resolution and cleanup with:
+`pub.dev` access, skip dependency resolution while still cleaning generated
+build caches with:
 
 ```bat
 tool\package-portable.bat x64 --no-pub
 tool\package-portable.bat arm64 --no-pub
 ```
 
-`--no-pub` requires `.dart_tool\package_config.json`. After changing
-`pubspec.yaml` or dependency versions, run the normal `flutter pub get` flow.
+`--no-pub` requires `.dart_tool\package_config.json`. It reuses the existing
+dependency configuration while deleting `build/` and
+`.dart_tool/flutter_build`. After changing `pubspec.yaml` or dependency
+versions, run the normal `flutter pub get` flow.
 
 Outputs:
 
 ```text
-dist/usbip-unified-windows-x64-portable.zip
-dist/usbip-unified-windows-arm64-portable.zip
+dist/usbip-unified-windows-x64-portable-20261010.17.zip
+dist/usbip-unified-windows-arm64-portable-20261010.17.zip
 ```
 
 The Windows batch script uses PowerShell `Compress-Archive`; no separate zip
@@ -201,35 +204,63 @@ virtual USB drivers must already exist or be installed by the app.
 
 ## 7. Publish a GitHub Release
 
-`build/`, `dist/`, `.dart_tool/`, `.tmp/`, and Wine environments are ignored by
-`.gitignore`. Keep source and build artifacts separate:
+The project repository is `https://github.com/qhshare/usbip-unified`, and the
+default branch is `main`. Use this checklist for a new release:
 
-1. Commit source, tests, scripts, documentation, and the intentional `offline/`
-   resources.
-2. Build the `dist/` archives on the corresponding platform hosts.
-3. Generate checksums for the Release files:
+1. Update the version in `pubspec.yaml` and `CHANGELOG.md`, then confirm the
+   source, offline resources, and documentation all belong to that version.
+2. Run `dart format --output=none --set-exit-if-changed lib test`,
+   `dart analyze`, `flutter test`,
+   `./tool/check-repository.sh`, and the offline checksum verification. Complete
+   platform validation and packaging on the corresponding Linux and Windows
+   build hosts.
+3. On the Linux build host, run `./tool/package-portable.sh linux`. On the
+   Windows build host, run `tool\package-portable.bat x64` and, when needed,
+   `arm64`. Archive names include the build number after `+` in
+   `pubspec.yaml`; for the current version they are
+   `usbip-unified-linux-x64-portable-20261010.17.tar.gz` and
+   `usbip-unified-windows-x64-portable-20261010.17.zip`.
+4. Generate checksums only for archives from the current build:
 
 ```bash
-find dist -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' \
-  | sort -z \
-  | xargs -0 -r -I{} sha256sum "dist/{}" > dist/SHA256SUMS
+build="$(sed -n 's/^version: //p' pubspec.yaml)"
+build="${build#*+}"
+(
+  cd dist
+  find . -maxdepth 1 -type f \
+    \( -name "usbip-unified-*-portable-${build}.tar.gz" \
+       -o -name "usbip-unified-*-portable-${build}.zip" \) \
+    -printf '%f\0' | sort -z | xargs -0 -r sha256sum > "SHA256SUMS-${build}.txt"
+  test -s "SHA256SUMS-${build}.txt" || {
+    rm -f "SHA256SUMS-${build}.txt"
+    echo "No portable archives found for build ${build}." >&2
+    exit 1
+  }
+)
 ```
 
-On Windows:
+For the current version this writes `dist/SHA256SUMS-20261010.17.txt`.
 
-```powershell
-Get-ChildItem dist -File |
-  Where-Object { $_.Name -ne 'SHA256SUMS' } |
-  ForEach-Object { Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256 }
-```
+5. Commit source, tests, scripts, documentation, and the intentional `offline/`
+   resources. Confirm that `dist/`, `build/`, `.dart_tool/`, `.tmp/`, Wine
+   environments, and nested third-party `.git/` directories are not staged.
+   `.gitignore` already excludes `build/`, `dist/`, and local development
+   environments.
+6. Push `main`, then create the version tag and GitHub Release. The current
+   version uses tag `v0.1.0-20261010.17`; upload the Linux/Windows archives and
+   `SHA256SUMS-<build>.txt`. Keep `THIRD_PARTY_NOTICES.md`, offline licenses,
+   and Release notes traceable in the source repository. If they are not
+   included in the portable archives, upload or link them from the Release
+   page.
 
-4. Create a version tag and GitHub Release.
-5. Upload the Linux and Windows archives, checksums,
-   `THIRD_PARTY_NOTICES.md`, and architecture notes.
-
-Do not copy `dist/` into Git staging. If a future offline installer exceeds
-GitHub's single-file limit, move it to Git LFS or Release assets and update
+Do not commit `dist/` or Release assets to source history. Current offline
+resources are below GitHub's 100 MB per-file limit. If a future resource
+exceeds that limit, move it to Git LFS or a Release asset and update
 `offline/README.md` and the checksum manifest.
+
+`.github/workflows/ci.yml` runs formatting, static analysis, tests, repository
+checks, offline checksum verification, and the Linux release build. It does not
+build Windows packages, upload build artifacts, or create a GitHub Release.
 
 ## 8. Troubleshooting
 
