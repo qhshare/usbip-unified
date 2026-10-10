@@ -37,8 +37,8 @@ MSVC、Windows SDK、CMake 工具和 C++ 工作负载都必须通过检查。Lin
 ## 2. 获取源码和资源
 
 ```bash
-git clone https://github.com/<用户名>/<仓库名>.git
-cd <仓库名>
+git clone https://github.com/qhshare/usbip-unified.git
+cd usbip-unified
 flutter pub get
 ```
 
@@ -151,7 +151,7 @@ Linux：
 ./tool/package-portable.sh linux
 ```
 
-输出：`dist/usbip-unified-linux-x64-portable.tar.gz`。
+输出：`dist/usbip-unified-linux-x64-portable-20261010.17.tar.gz`。
 
 Windows：
 
@@ -164,21 +164,23 @@ Windows 免安装包必须在原生 Windows 构建机生成。Linux/macOS 上的
 前端产物和 Windows release Engine 不能混用；打包脚本会拒绝这种构建，避免
 生成可以启动但把 `Platform.operatingSystem` 编译成 Linux 的错误 EXE。
 
-Windows 构建机已有依赖但无法访问 `pub.dev` 时，可以跳过依赖解析和清理步骤：
+Windows 构建机已有依赖但无法访问 `pub.dev` 时，可以跳过依赖解析，但仍会清理
+生成的构建缓存：
 
 ```bat
 tool\package-portable.bat x64 --no-pub
 tool\package-portable.bat arm64 --no-pub
 ```
 
-`--no-pub` 要求 `.dart_tool\package_config.json` 已存在。修改 `pubspec.yaml`
+`--no-pub` 要求 `.dart_tool\package_config.json` 已存在。该模式会复用现有
+依赖配置，同时删除 `build/` 和 `.dart_tool/flutter_build`。修改 `pubspec.yaml`
 或依赖版本后，应先联网执行正常的 `flutter pub get`。
 
 输出：
 
 ```text
-dist/usbip-unified-windows-x64-portable.zip
-dist/usbip-unified-windows-arm64-portable.zip
+dist/usbip-unified-windows-x64-portable-20261010.17.zip
+dist/usbip-unified-windows-arm64-portable-20261010.17.zip
 ```
 
 Windows 批处理使用 PowerShell `Compress-Archive`，不需要单独安装 zip。解压
@@ -186,34 +188,59 @@ Windows 批处理使用 PowerShell `Compress-Archive`，不需要单独安装 zi
 Flutter 图形应用的分发方式，USB/IP 工具、服务、内核模块和 Windows 虚拟
 USB 驱动仍需目标系统已有，或由应用安装器安装。
 
-## 7. GitHub Release
+## 7. 发布 GitHub Release
 
-`build/`、`dist/`、`.dart_tool/`、`.tmp/` 和 Wine 环境已被 `.gitignore`
-排除。源码仓库与构建产物分开发布：
+项目仓库为 `https://github.com/qhshare/usbip-unified`，默认分支为 `main`。
+发布新版本时按以下检查清单执行：
 
-1. 提交源码、测试、脚本、文档和明确需要的 `offline/` 资源。
-2. 在对应平台构建 `dist/` 压缩包。
-3. 为 Release 产物生成校验值：
+1. 更新 `pubspec.yaml` 的版本号和 `CHANGELOG.md`，确认源码、离线资源与文档
+   属于同一版本。
+2. 运行 `dart format --output=none --set-exit-if-changed lib test`、
+   `dart analyze`、`flutter test`、
+   `./tool/check-repository.sh` 和离线资源校验；在 Linux 与 Windows 构建机
+   分别完成对应平台的验证与打包。
+3. 在 Linux 构建机运行 `./tool/package-portable.sh linux`；在 Windows 构建机
+   运行 `tool\package-portable.bat x64`，需要时再运行 `arm64`。产物名称带有
+   `pubspec.yaml` 中 `+` 后的构建号，例如当前版本为
+   `usbip-unified-linux-x64-portable-20261010.17.tar.gz` 和
+   `usbip-unified-windows-x64-portable-20261010.17.zip`。
+4. 只对当前构建号的压缩包生成校验文件：
 
 ```bash
-find dist -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' \
-  | sort -z \
-  | xargs -0 -r -I{} sha256sum "dist/{}" > dist/SHA256SUMS
+build="$(sed -n 's/^version: //p' pubspec.yaml)"
+build="${build#*+}"
+(
+  cd dist
+  find . -maxdepth 1 -type f \
+    \( -name "usbip-unified-*-portable-${build}.tar.gz" \
+       -o -name "usbip-unified-*-portable-${build}.zip" \) \
+    -printf '%f\0' | sort -z | xargs -0 -r sha256sum > "SHA256SUMS-${build}.txt"
+  test -s "SHA256SUMS-${build}.txt" || {
+    rm -f "SHA256SUMS-${build}.txt"
+    echo "未找到构建号 ${build} 对应的便携包。" >&2
+    exit 1
+  }
+)
 ```
 
-Windows 可使用：
+当前版本会生成 `dist/SHA256SUMS-20261010.17.txt`。
 
-```powershell
-Get-ChildItem dist -File |
-  Where-Object { $_.Name -ne 'SHA256SUMS' } |
-  ForEach-Object { Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256 }
-```
+5. 提交源码、测试、脚本、文档和明确需要的 `offline/` 资源；确认 `dist/`、
+   `build/`、`.dart_tool/`、`.tmp/`、Wine 环境和第三方嵌套 `.git/` 没有进入
+   暂存区。`build/`、`dist/` 和本地开发环境已由 `.gitignore` 排除。
+6. 推送 `main`，创建版本标签和 GitHub Release。当前版本对应标签
+   `v0.1.0-20261010.17`；上传 Linux/Windows 压缩包和
+   `SHA256SUMS-<build>.txt`。`THIRD_PARTY_NOTICES.md`、离线许可证和 Release
+   说明应继续保留在源码仓库；如未包含在便携包中，应在 Release 页面单独上传
+   或链接。
 
-4. 在 GitHub 创建版本标签和 Release。
-5. 上传 Linux/Windows 压缩包、校验值、`THIRD_PARTY_NOTICES.md` 和架构说明。
+不要把 `dist/` 或 Release 附件提交到源码历史。当前离线资源文件低于 GitHub
+的 100 MB 单文件限制；未来若资源超过限制，应改用 Git LFS 或 Release 附件，
+并同步更新 `offline/README.md` 和校验清单。
 
-不要把 `dist/` 复制到 Git 暂存区。未来若离线资源超过 GitHub 单文件限制，
-应改用 Git LFS 或 Release 附件，并同步更新 `offline/README.md` 和校验清单。
+`.github/workflows/ci.yml` 会运行格式检查、静态分析、测试、仓库检查、离线
+资源校验和 Linux release 构建；当前不会构建 Windows 便携包，也不会上传
+构建产物或自动创建 GitHub Release。
 
 ## 8. 常见问题
 

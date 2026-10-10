@@ -27,7 +27,7 @@ installing the native USB/IP components required by the host platform.
 - [Offline Installation](#offline-installation)
 - [Portable Releases](#portable-releases)
 - [Development and Testing](#development-and-testing)
-- [Publishing to GitHub](#publishing-to-github)
+- [Release Process](#release-process)
 - [Repository Layout](#repository-layout)
 - [Building Guide](BUILDING.en.md)
 - [Third-Party Sources and Licenses](#third-party-sources-and-licenses)
@@ -129,7 +129,8 @@ high-bandwidth workloads, or long-duration operation.
 Install Flutter stable and the Linux desktop build dependencies, then run:
 
 ```bash
-cd USBIP-整合
+git clone https://github.com/qhshare/usbip-unified.git
+cd usbip-unified
 flutter pub get
 ./run.sh
 ```
@@ -446,7 +447,6 @@ can be used without installing them again.
 Build Linux on a Linux host:
 
 ```bash
-./tool/bootstrap.sh
 ./tool/package-portable.sh linux
 ```
 
@@ -457,7 +457,8 @@ successfully, reuse the existing `.dart_tool/package_config.json`:
 ./tool/package-portable.sh linux --no-pub
 ```
 
-`--no-pub` skips dependency resolution and `flutter clean`, which is useful for
+`--no-pub` skips dependency resolution and the `flutter clean` command, but
+still removes `build/` and `.dart_tool/flutter_build`, which is useful for
 repeating a build offline. If `.dart_tool/package_config.json` is missing, run
 `flutter pub get` once on a network-enabled host. After changing dependencies or
 `pubspec.yaml`, run the normal dependency-resolution flow instead of reusing the
@@ -466,13 +467,12 @@ old package configuration.
 Output:
 
 ```text
-dist/usbip-unified-linux-x64-portable.tar.gz
+dist/usbip-unified-linux-x64-portable-20261010.17.tar.gz
 ```
 
 Build Windows on a Windows build host:
 
 ```bat
-tool\bootstrap.bat
 tool\package-portable.bat x64
 tool\package-portable.bat arm64
 ```
@@ -486,17 +486,18 @@ tool\package-portable.bat x64 --no-pub
 tool\package-portable.bat arm64 --no-pub
 ```
 
-The default packaging flow runs `flutter pub get` and `flutter clean`, rebuilds
+The default packaging flow runs `flutter clean` and `flutter pub get`, rebuilds
 the Windows release, and verifies that
 `data\flutter_assets\offline\install-windows-offline.ps1` matches the source
-file. `--no-pub` reuses the existing dependency configuration and skips those
-two preparation steps. Both modes perform the bundle checks. After changing the
-source or offline installer, do not reuse an old `build/windows` directory or
+file. `--no-pub` reuses the existing dependency configuration, skips those two
+commands, and still removes `build/` and `.dart_tool/flutter_build`. Both modes
+perform the bundle checks. After changing the source or offline installer, do
+not reuse an old `build/windows` directory or
 ZIP; run the packaging command again. Windows PowerShell 5.1 can misread UTF-8
 scripts without a BOM, so the offline installer is intentionally ASCII-only to
 prevent encoding-related parse errors.
 The build number is shown in the native window title, the page subtitle, and
-the startup log, for example `0.1.0+20260908.1`. If that build number is not
+the startup log, for example `0.1.0+20261010.17`. If that build number is not
 visible, the running `usbip_unified.exe` is an older release. Replacing only a
 PowerShell script in a temporary directory does not update the GUI's
 executable discovery code; rebuild and extract the complete portable ZIP.
@@ -504,13 +505,14 @@ executable discovery code; rebuild and extract the complete portable ZIP.
 After launching the new package, confirm the build number first, then run the
 environment check and refresh devices. Do not mix files from an old extracted
 directory with a new package; extract the complete
-`dist\\usbip-unified-windows-x64-portable.zip` (or ARM64 archive).
+`dist\usbip-unified-windows-x64-portable-20261010.17.zip` (or the matching
+ARM64 archive).
 
 Output:
 
 ```text
-dist/usbip-unified-windows-x64-portable.zip
-dist/usbip-unified-windows-arm64-portable.zip
+dist/usbip-unified-windows-x64-portable-20261010.17.zip
+dist/usbip-unified-windows-arm64-portable-20261010.17.zip
 ```
 
 Extract the archive and run `usbip_unified` on Linux or
@@ -521,12 +523,15 @@ archives to GitHub Releases rather than committing them to the source tree.
 
 ## Development and Testing
 
-Initialize or regenerate the desktop runners:
+Install dependencies:
 
 ```bash
-./tool/bootstrap.sh
 flutter pub get
 ```
+
+Only run `./tool/bootstrap.sh` or `tool\bootstrap.bat` when the `linux/` or
+`windows/` runner directory is missing. Bootstrap may overwrite local runner
+changes, so commit or back up those changes first.
 
 Recommended checks before committing:
 
@@ -561,36 +566,67 @@ files, do not include their internal `.git/` directories. Keep the source,
 license, and source lock information. Run `./tool/check-repository.sh` before
 publishing to detect accidental nested repositories or local credentials.
 
-## Publishing to GitHub
+## Release Process
 
-The project has its own local Git repository. After creating an empty GitHub
-repository, run from the project root:
+The project repository is `https://github.com/qhshare/usbip-unified`, and the
+default branch is `main`. For a new release:
+
+1. Update the version in `pubspec.yaml` and `CHANGELOG.md`, then confirm the
+   source, offline resources, and documentation all belong to that version.
+2. Run `dart format --output=none --set-exit-if-changed lib test`,
+   `dart analyze`, `flutter test`,
+   `./tool/check-repository.sh`, and the offline checksum verification. Complete
+   platform validation on Linux and Windows build hosts as applicable.
+3. On the Linux build host, run `./tool/package-portable.sh linux`. On the
+   Windows build host, run `tool\package-portable.bat x64` and, when needed,
+   `arm64`. Archive names include the build number after `+` in
+   `pubspec.yaml`; for the current version they are
+   `usbip-unified-linux-x64-portable-20261010.17.tar.gz` and
+   `usbip-unified-windows-x64-portable-20261010.17.zip`.
+4. Generate checksums only for archives from the current build:
 
 ```bash
-git remote add origin https://github.com/<your-user>/<repository>.git
-git add -A
-git status --short
-git commit -m "Initial USBIP Unified Manager release"
-git push -u origin main
+build="$(sed -n 's/^version: //p' pubspec.yaml)"
+build="${build#*+}"
+(
+  cd dist
+  find . -maxdepth 1 -type f \
+    \( -name "usbip-unified-*-portable-${build}.tar.gz" \
+       -o -name "usbip-unified-*-portable-${build}.zip" \) \
+    -printf '%f\0' | sort -z | xargs -0 -r sha256sum > "SHA256SUMS-${build}.txt"
+  test -s "SHA256SUMS-${build}.txt" || {
+    rm -f "SHA256SUMS-${build}.txt"
+    echo "No portable archives found for build ${build}." >&2
+    exit 1
+  }
+)
 ```
 
-Before pushing, confirm that the status does not include `.dart_tool/`,
-`build/`, `dist/`, `.tmp/`, `.wine*/`, IDE-private configuration, or nested
-third-party `.git` metadata. `pubspec.lock` should be committed to keep the
-resolved Flutter/Dart dependency versions reproducible.
+For the current version this writes `dist/SHA256SUMS-20261010.17.txt`.
 
-The current offline resource files are below GitHub's 100 MB single-file
-limit. If future installers exceed that limit, use Git LFS or GitHub Releases
-instead of adding large binaries to the source history.
+5. Commit source, tests, scripts, documentation, and required `offline/`
+   resources. Confirm that `dist/`, `build/`, `.dart_tool/`, `.tmp/`, Wine
+   environments, and nested third-party `.git/` directories are not staged.
+   Offline resources are committed with the source; current files are below
+   GitHub's 100 MB per-file limit. Use Git LFS or GitHub Release assets for
+   future large installers.
+6. Push `main`, create the version tag and GitHub Release. The current version
+   uses tag `v0.1.0-20261010.17`; upload the Linux/Windows archives and
+   `SHA256SUMS-<build>.txt` as Release assets. Keep third-party notices,
+   offline licenses, and Release notes traceable in the source repository. If
+   they are not included in the portable archives, upload or link them from the
+   Release page.
 
-After pushing the source, upload the Linux and Windows portable archives from
-`dist/` as GitHub Release assets. Include `THIRD_PARTY_NOTICES.md`, checksums,
-and the target architecture information with the release. Do not commit the
-`dist/` directory to the source repository.
+Do not commit `dist/` or Release assets to source history. The GitHub Actions
+workflow at `.github/workflows/ci.yml` runs formatting, static analysis, tests,
+repository checks, offline checksum verification, and the Linux release build.
+It does not build Windows packages, upload artifacts, or create a GitHub
+Release.
 
 ## Repository Layout
 
 ```text
+.github/workflows/ci.yml     GitHub Actions checks and Linux release build
 lib/                         Flutter UI and Dart service layer
 test/                        Unit tests and widget tests
 linux/                       Flutter Linux runner
@@ -598,6 +634,10 @@ windows/                     Flutter Windows runner
 offline/                     Deliberately shipped installers and checksums
 third_party/                 Upstream reference sources and source lock
 tool/                        Bootstrap, packaging, update, and check scripts
+run.sh                       Linux development run script
+run-windows.bat              Windows development run script
+tool/package-portable.sh     Linux portable packaging script
+tool/package-portable.bat    Windows portable packaging script
 BUILDING.en.md               Source build, test, packaging, and release guide
 ARCHITECTURE.md              Module boundaries and data flow
 CONTRIBUTING.md              Development and pull request guidance

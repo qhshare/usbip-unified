@@ -24,7 +24,7 @@
 - [离线安装](#离线安装)
 - [免安装发布包](#免安装发布包)
 - [开发与测试](#开发与测试)
-- [上传 GitHub](#上传-github)
+- [发布流程](#发布流程)
 - [目录结构](#目录结构)
 - [构建指南](BUILDING.md)
 - [第三方源码与许可证](#第三方源码与许可证)
@@ -112,7 +112,8 @@ Windows 客户端基础流程，以及 CH340 串口穿透的双向数据链路�
 先安装 Flutter stable 和 Linux desktop 依赖，然后：
 
 ```bash
-cd USBIP-整合
+git clone https://github.com/qhshare/usbip-unified.git
+cd usbip-unified
 flutter pub get
 ./run.sh
 ```
@@ -367,7 +368,7 @@ Windows 离线安装脚本支持分别安装角色：`-Server` 只安装共享�
 Windows 便携包；不能只替换临时目录中的 PowerShell 脚本。新版 GUI 还会直接
 检查 `C:\Program Files\usbipd-win\usbipd.exe` 和服务配置，不依赖旧 `PATH`。
 新版构建号会同时显示在系统窗口标题、页面副标题和启动日志中，例如
-`0.1.0+20260908.1`。如果这些位置没有显示该构建号，说明运行的仍是旧版
+`0.1.0+20261010.17`。如果这些位置没有显示该构建号，说明运行的仍是旧版
 `usbip_unified.exe`；只把脚本复制到临时目录不会更新 GUI 的工具探测代码。
 
 可以在 PowerShell 中独立确认服务端安装结果：
@@ -387,7 +388,8 @@ Test-Path "$env:WINDIR\System32\vcruntime140_1.dll"
 
 服务端文件、服务状态、VC++ Runtime 和客户端文件都应检查通过，`usbipw.exe port` 应能启动并输出
 本机客户端端口状态。若服务端文件存在但旧 GUI 仍报错，通常是旧包问题；关闭旧 GUI，使用重新构建
-的 `dist\usbip-unified-windows-x64-portable.zip` 或 ARM64 包。若文件不存在，
+的 `dist\usbip-unified-windows-x64-portable-20261010.17.zip` 或对应 ARM64
+包。若文件不存在，
 则应查看离线安装日志、UAC 和 Windows 事件查看器。
 
 如果在设置中填写“工具路径”，可以填写 `usbipd.exe` 或 `usbip-win2` 安装目录；
@@ -411,7 +413,6 @@ USB 设备节点。这些组件必须由目标系统预先安装，或由应用�
 Linux 在 Linux 主机上构建：
 
 ```bash
-./tool/bootstrap.sh
 ./tool/package-portable.sh linux
 ```
 
@@ -422,7 +423,8 @@ Linux 在 Linux 主机上构建：
 ./tool/package-portable.sh linux --no-pub
 ```
 
-`--no-pub` 会跳过依赖解析和 `flutter clean`，因此适合离线重复打包；如果
+`--no-pub` 会跳过依赖解析和 `flutter clean` 命令，但仍会清理 `build/` 和
+`.dart_tool/flutter_build`，因此适合离线重复打包；如果
 `.dart_tool/package_config.json` 不存在，必须先在可联网环境执行
 `flutter pub get`。依赖或 `pubspec.yaml` 发生变化后，应重新执行正常的
 `flutter pub get`，不要继续复用旧依赖。
@@ -430,13 +432,12 @@ Linux 在 Linux 主机上构建：
 输出：
 
 ```text
-dist/usbip-unified-linux-x64-portable.tar.gz
+dist/usbip-unified-linux-x64-portable-20261010.17.tar.gz
 ```
 
 Windows 必须在 Windows 构建机上构建：
 
 ```bat
-tool\bootstrap.bat
 tool\package-portable.bat x64
 tool\package-portable.bat arm64
 ```
@@ -449,21 +450,24 @@ tool\package-portable.bat x64 --no-pub
 tool\package-portable.bat arm64 --no-pub
 ```
 
-默认打包脚本会执行 `flutter pub get` 和 `flutter clean`，再重新构建 Windows
-Release；`--no-pub` 模式会复用现有依赖并跳过这两步。两种模式都会校验包内
+默认打包脚本会执行 `flutter clean` 和 `flutter pub get`，再重新构建 Windows
+Release；`--no-pub` 模式会复用现有依赖，不执行这两个命令，但仍会删除
+`build/` 和 `.dart_tool/flutter_build`。两种模式都会校验包内
 `data\flutter_assets\offline\install-windows-offline.ps1` 与源码完全一致。
 源码或离线脚本更新后，不要继续复制旧的 `build/windows` 或旧的 ZIP；必须重新
 执行上面的命令。Windows PowerShell 5.1 对无 BOM 的 UTF-8 脚本兼容性较差，当前
 离线安装脚本特意保持 ASCII 编码，以避免中文乱码导致脚本解析失败。
 启动新包后，请先确认窗口标题或页面副标题中出现当前构建号，再点击“检查环境”
 和“刷新设备”。不要在旧解压目录中直接覆盖单个 exe 或临时安装脚本；应删除旧
-目录后解压完整的 `dist\usbip-unified-windows-x64-portable.zip`（或 ARM64 包）。
+目录后解压完整的
+`dist\usbip-unified-windows-x64-portable-20261010.17.zip`（或对应 ARM64
+包）。
 
 输出：
 
 ```text
-dist\usbip-unified-windows-x64-portable.zip
-dist\usbip-unified-windows-arm64-portable.zip
+dist\usbip-unified-windows-x64-portable-20261010.17.zip
+dist\usbip-unified-windows-arm64-portable-20261010.17.zip
 ```
 
 解压后运行 `usbip_unified` 或 `usbip_unified.exe`。不要删除同目录的 `data/`
@@ -473,12 +477,15 @@ dist\usbip-unified-windows-arm64-portable.zip
 
 ## 开发与测试
 
-初始化或重新生成桌面 runner：
+安装依赖：
 
 ```bash
-./tool/bootstrap.sh
 flutter pub get
 ```
+
+只有 `linux/` 或 `windows/` runner 目录缺失时，才运行
+`./tool/bootstrap.sh` 或 `tool\bootstrap.bat` 重新生成。bootstrap 可能覆盖
+平台 runner 的本地修改，执行前应先提交或备份。
 
 提交前建议执行：
 
@@ -512,32 +519,62 @@ flutter build windows --release
 源码、许可证和 `SOURCES.lock` 即可。发布前执行 `./tool/check-repository.sh`，
 确认没有意外的嵌套仓库或本地凭据。
 
-## 上传 GitHub
+## 发布流程
 
-项目根目录已经适合初始化为独立 Git 仓库。当前目录中的 `.git/` 只包含本地
-仓库元数据，不会被再次提交；不要把上级目录的 Git 仓库当作本项目仓库使用。
-首次创建 GitHub 空仓库后，在项目根目录执行：
+项目仓库为 `https://github.com/qhshare/usbip-unified`，默认分支为 `main`。
+发布新版本时按以下顺序执行：
+
+1. 更新 `pubspec.yaml` 的版本号和 `CHANGELOG.md`，确认源码、离线资源与文档
+   属于同一版本。
+2. 运行 `dart format --output=none --set-exit-if-changed lib test`、
+   `dart analyze`、`flutter test`、
+   `./tool/check-repository.sh` 和离线资源校验；Linux 与 Windows 分别在对应
+   构建机完成平台验证。
+3. 在 Linux 构建机运行 `./tool/package-portable.sh linux`；在 Windows 构建机
+   运行 `tool\package-portable.bat x64`，需要时再运行 `arm64`。产物名称带有
+   `pubspec.yaml` 中 `+` 后的构建号，例如当前版本为
+   `usbip-unified-linux-x64-portable-20261010.17.tar.gz` 和
+   `usbip-unified-windows-x64-portable-20261010.17.zip`。
+4. 只对当前构建号的压缩包生成校验文件：
 
 ```bash
-git remote add origin https://github.com/<你的用户名>/<仓库名>.git
-git add -A
-git status --short
-git commit -m "Initial USBIP Unified Manager release"
-git push -u origin main
+build="$(sed -n 's/^version: //p' pubspec.yaml)"
+build="${build#*+}"
+(
+  cd dist
+  find . -maxdepth 1 -type f \
+    \( -name "usbip-unified-*-portable-${build}.tar.gz" \
+       -o -name "usbip-unified-*-portable-${build}.zip" \) \
+    -printf '%f\0' | sort -z | xargs -0 -r sha256sum > "SHA256SUMS-${build}.txt"
+  test -s "SHA256SUMS-${build}.txt" || {
+    rm -f "SHA256SUMS-${build}.txt"
+    echo "未找到构建号 ${build} 对应的便携包。" >&2
+    exit 1
+  }
+)
 ```
 
-确认 `git status --short` 中没有 `.dart_tool/`、`build/`、`dist/`、`.tmp/`、
-`.wine*/`、IDE 配置或第三方嵌套 `.git`。离线安装资源会随源码提交；单个当前
-资源文件低于 GitHub 的 100 MB 单文件限制。后续如果新增大型安装包，应改用
-Git LFS 或 GitHub Releases，不要把构建产物长期堆在源码历史中。
+当前版本会生成 `dist/SHA256SUMS-20261010.17.txt`。
 
-推送源码后，再将 `dist/` 中的 Linux/Windows 免安装压缩包作为 GitHub Release
-附件发布。Release 页面应同时附上 `THIRD_PARTY_NOTICES.md`、校验值和目标架构
-说明；不要把 `dist/` 目录直接提交到源码仓库。
+5. 提交源码、测试、脚本、文档和必要的 `offline/` 资源；确认 `dist/`、
+   `build/`、`.dart_tool/`、`.tmp/`、Wine 环境和第三方嵌套 `.git/` 没有进入
+   暂存区。离线安装资源会随源码提交；单个当前资源文件低于 GitHub 的 100 MB
+   单文件限制。后续如果新增大型安装包，应改用 Git LFS 或 GitHub Release。
+6. 推送 `main`，创建版本标签和 GitHub Release。当前版本对应标签
+   `v0.1.0-20261010.17`；将 Linux/Windows 压缩包和
+   `SHA256SUMS-<build>.txt` 上传为 Release 附件。第三方通知、离线许可证和
+   Release 说明继续保留在源码仓库；如未包含在便携包中，应在 Release 页面
+   单独上传或链接。
+
+不要把 `dist/` 目录或 Release 附件提交到源码历史。GitHub Actions 的
+`.github/workflows/ci.yml` 会运行格式检查、静态分析、测试、仓库检查、离线
+资源校验和 Linux release 构建；当前不会构建 Windows 便携包，也不会上传
+构建产物或自动创建 Release。
 
 ## 目录结构
 
 ```text
+.github/workflows/ci.yml     GitHub Actions 检查与 Linux release 构建
 lib/                         Flutter UI 和 Dart 服务层
 test/                        单元测试和 widget 测试
 linux/                       Flutter Linux runner
@@ -545,6 +582,10 @@ windows/                     Flutter Windows runner
 offline/                     有意提交的离线安装资源、脚本和校验清单
 third_party/                 上游参考源码、许可证和来源锁定文件
 tool/                        初始化、打包、更新和仓库检查脚本
+run.sh                       Linux 开发运行脚本
+run-windows.bat              Windows 开发运行脚本
+tool/package-portable.sh     Linux 便携包脚本
+tool/package-portable.bat    Windows 便携包脚本
 BUILDING.md                 从源码构建、测试、打包和 Release 指南
 ARCHITECTURE.md              模块边界、数据流和扩展方式
 CONTRIBUTING.md              开发、测试和 Pull Request 规范

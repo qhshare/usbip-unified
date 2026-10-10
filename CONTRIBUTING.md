@@ -15,19 +15,28 @@ USB/IP 的安全风险。
 - Windows 开发需要 Visual Studio 的 Desktop development with C++ 工作负载
 - 真机 USB/IP 联调需要两台可互通的主机、对应的内核模块或 Windows 驱动
 
-初始化工程：
+首次获取源码并安装依赖：
+
+```bash
+git clone https://github.com/qhshare/usbip-unified.git
+cd usbip-unified
+flutter pub get
+```
+
+只有 `linux/` 或 `windows/` runner 目录缺失时，才需要重新生成平台 runner。
+Linux 使用：
 
 ```bash
 ./tool/bootstrap.sh
-flutter pub get
 ```
 
 Windows 使用：
 
 ```bat
 tool\bootstrap.bat
-flutter pub get
 ```
+
+bootstrap 可能覆盖平台 runner 的本地修改，执行前应先提交或备份。
 
 ## 提交前检查
 
