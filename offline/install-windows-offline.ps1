@@ -750,8 +750,19 @@ try {
       $service = Wait-UsbipdServiceRunning -TimeoutSeconds 15
       Write-InstallMessage "usbipd service status: $($service.Status)"
     }
-    $probeOutput = (& $serverExecutable list 2>&1 | Out-String).Trim()
-    $probeCode = $LASTEXITCODE
+    # Windows PowerShell 5.1 turns native stderr into a terminating error when
+    # $ErrorActionPreference is Stop, even with 2>&1. usbipd may write warnings
+    # (for example about unknown third-party USB filter drivers) to stderr
+    # while still succeeding, so run this probe with Continue and decide by the
+    # exit code only.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      $probeOutput = (& $serverExecutable list 2>&1 | Out-String).Trim()
+      $probeCode = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $previousErrorActionPreference
+    }
     Write-InstallMessage "usbipd list probe exit code: $probeCode"
     if (-not [string]::IsNullOrWhiteSpace($probeOutput)) {
       Write-InstallMessage ('usbipd list probe output: ' + $probeOutput)
